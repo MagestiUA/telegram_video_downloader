@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  tg_video_downloader:
+    image: tg_video_downloader:local
+    container_name: tg_video_downloader
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - /media/devmon/sda1-usb-Initio_INIC-3609/NAS/Video/Anime:/data/downloads
+      - /media/devmon/sda1-usb-Initio_INIC-3609/NAS/Files/tg_video_downloader/sessions:/app/sessions
+      - /media/devmon/sda1-usb-Initio_INIC-3609/NAS/Files/tg_video_downloader/logs:/app/logs
