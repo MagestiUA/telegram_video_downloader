@@ -11,8 +11,7 @@ class Settings(BaseSettings):
     # Download Path
     DOWNLOAD_PATH: str = "/data/downloads"
     
-    # API Keys
-    GEMINI_API_KEY: str
+    
     # API Keys
     GEMINI_API_KEY: str
     # TMDB_API_KEY removed

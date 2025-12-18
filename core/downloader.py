@@ -1,16 +1,12 @@
 import os
 import logging
 import time
-import asyncio
 from pyrogram import Client
 from pyrogram.types import Message
 from config.config import settings
 from core.renamer import get_target_path, generate_filename
 
 logger = logging.getLogger(__name__)
-
-WORKERS = 4  # Number of parallel chunks
-CHUNK_SIZE = 1024 * 1024  # 1MB buffer for writing
 
 async def progress_bar(current, total, status_msg: Message, start_time):
     """
@@ -30,7 +26,7 @@ async def progress_bar(current, total, status_msg: Message, start_time):
     
     try:
         await status_msg.edit_text(
-            f"🚀 Downloading (Smart Multi-Thread)...\n"
+            f"🚀 Downloading...\n"
             f"Progress: {percentage:.1f}%\n"
             f"Speed: {speed/1024/1024:.2f} MB/s\n"
             f"Elapsed: {elapsed_time}s"
@@ -38,77 +34,11 @@ async def progress_bar(current, total, status_msg: Message, start_time):
     except Exception:
         pass 
 
-# ... imports
-
-# Pyrogram uses 1MB chunks for stream_media offsets usually
-PYRO_CHUNK_SIZE = 1024 * 1024
-
-async def download_chunk(client: Client, message: Message, start_byte: int, length: int, file_handle, lock: asyncio.Lock, progress_callback):
-    try:
-        # stream_media takes offset in CHUNKS (1MB units), not bytes.
-        # limit is also in CHUNKS.
-        
-        chunk_offset = start_byte // PYRO_CHUNK_SIZE
-        # We calculate limit based on how many 1MB chunks we need to cover 'length'
-        # e.g. length=1.5MB -> 2 chunks
-        chunk_limit = (length + PYRO_CHUNK_SIZE - 1) // PYRO_CHUNK_SIZE
-        
-        current_pos = start_byte
-        remaining = length
-        
-        # We must filter the stream to only write the bytes we belong to.
-        # Because stream_media might give us a full 1MB chunk overlapping into the next worker's area.
-        
-        # Internal offset within the first chunk (should be 0 if we align correctly)
-        internal_offset = start_byte % PYRO_CHUNK_SIZE
-        
-        async for chunk in client.stream_media(message, offset=chunk_offset, limit=chunk_limit):
-            if not chunk:
-                break
-            
-            # Slice chunk if needed (for start or end)
-            # But simpler: just write everything to file at correct pos?
-            # Access to file is random. 
-            # The chunk from stream_media corresponds to `(chunk_offset + i) * 1MB`.
-            # We just write it.
-            # Wait, if multiple workers overlap, we might overwrite?
-            # If we align starts to 1MB, then:
-            # Worker 1: 0 - 25MB
-            # Worker 2: 25MB - 50MB
-            # ALL starts are aligned.
-            # So `stream_media` yields exactly the blocks we need.
-            # The only issue is the LAST block of a worker might exceed `length`.
-            
-            chunk_len = len(chunk)
-            
-            # If internal_offset > 0 (shouldn't happen with alignment), skip bytes?
-            # We assume alignment.
-            
-            # Check if this chunk goes beyond our assigned length
-            bytes_to_write = chunk
-            if remaining < chunk_len:
-                bytes_to_write = chunk[:remaining]
-            
-            write_len = len(bytes_to_write)
-            
-            async with lock:
-                file_handle.seek(current_pos)
-                file_handle.write(bytes_to_write)
-            
-            current_pos += write_len
-            remaining -= write_len
-            
-            if progress_callback:
-                progress_callback(write_len)
-                
-            if remaining <= 0:
-                break
-                
-    except Exception as e:
-        logger.error(f"Chunk download error: {e}")
-        raise e
-
 async def download_video(client: Client, message: Message, metadata: dict, status_msg: Message = None):
+    """
+    Downloads video using Pyrogram's built-in download_media method.
+    This is more stable than the custom multi-threaded downloader.
+    """
     canonical_name = metadata['canonical_name']
     season = metadata.get('season') 
     episode = metadata.get('episode')
@@ -126,87 +56,28 @@ async def download_video(client: Client, message: Message, metadata: dict, statu
     new_filename = generate_filename(canonical_name, season, episode, ext)
     target_path = get_target_path(canonical_name, new_filename)
     
-    logger.info(f"Starting Smart Download: {target_path} | Size: {file_size/1024/1024:.2f} MB")
+    logger.info(f"Starting download: {target_path} | Size: {file_size/1024/1024:.2f} MB")
     
     start_time = time.time()
     
+    async def progress(current, total):
+        """Progress callback для download_media"""
+        await progress_bar(current, total, status_msg, start_time)
+    
     try:
-        # Pre-allocate file
-        with open(target_path, "wb") as f:
-            f.seek(file_size - 1)
-            f.write(b"\0")
-            
-        progress_lock = asyncio.Lock()
-        file_lock = asyncio.Lock()
-        downloaded_bytes = 0
+        # Використовуємо вбудований Pyrogram downloader
+        downloaded_path = await client.download_media(
+            message,
+            file_name=target_path,
+            progress=progress
+        )
         
-        # Progress callback (thread_safe via lock logic implicitly in main loop)
-        def update_progress(chunk_size):
-            nonlocal downloaded_bytes
-            downloaded_bytes += chunk_size
-        
-        # Monitor Task
-        async def monitor():
-            while downloaded_bytes < file_size:
-                await progress_bar(downloaded_bytes, file_size, status_msg, start_time)
-                await asyncio.sleep(2)
-            await progress_bar(file_size, file_size, status_msg, start_time) 
-
-        monitor_task = asyncio.create_task(monitor())
-
-        # Split logic - ALIGN TO 1MB (PYRO_CHUNK_SIZE)
-        # Each worker should start at a multiple of 1MB.
-        
-        # Rough chunk size per worker
-        raw_chunk_size = file_size // WORKERS
-        
-        # Align to 1MB
-        aligned_chunk_size = (raw_chunk_size // PYRO_CHUNK_SIZE) * PYRO_CHUNK_SIZE
-        if aligned_chunk_size == 0:
-            aligned_chunk_size = PYRO_CHUNK_SIZE # Minimum 1MB
-            
-        tasks = []
-        
-        with open(target_path, "r+b") as f:
-            for i in range(WORKERS):
-                start = i * aligned_chunk_size
-                
-                # If start is beyond file (small file), skip
-                if start >= file_size:
-                    break
-                    
-                # End is next start or file_size
-                if i == WORKERS - 1:
-                    length = file_size - start
-                else:
-                    # Logic: 
-                    # Worker 0: 0 -> aligned_chunk
-                    # Worker 1: aligned -> 2*aligned
-                    # ...
-                    length = aligned_chunk_size
-                    
-                    # Correction for last worker logic in loop
-                    # If we set lengths strictly, we might leave a gap at the end if file is large?
-                    # No, i=3 (last) takes everything.
-                    # But wait, i=0,1,2 take `aligned_chunk_size`.
-                    # i=3 starts at 3*aligned.
-                    # Does 3*aligned + length cover whole file?
-                    # 4 * aligned might be < file_size.
-                    # So last worker takes `file_size - start`.
-                    pass
-
-                tasks.append(
-                    download_chunk(client, message, start, length, f, file_lock, update_progress)
-                )
-            
-            await asyncio.gather(*tasks)
-
-        monitor_task.cancel()
+        # Final progress update
         await progress_bar(file_size, file_size, status_msg, start_time)
         
         if status_msg:
             # Display Path Replacement (Docker -> Windows)
-            display_path = target_path
+            display_path = downloaded_path
             internal_root = settings.DOWNLOAD_PATH # e.g. /data/downloads
             windows_root = r"Z:\Video\Anime"
             
@@ -218,9 +89,9 @@ async def download_video(client: Client, message: Message, metadata: dict, statu
             
             await status_msg.edit_text(f"✅ Download Complete!\nSaved to: `{display_path}`")
             
-        logger.info(f"Download completed: {target_path}")
-        return target_path
-
+        logger.info(f"Download completed: {downloaded_path}")
+        return downloaded_path
+        
     except Exception as e:
         logger.error(f"Download failed: {e}")
         if status_msg:

@@ -1,16 +1,37 @@
 import asyncio
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from pyrogram import Client, idle, filters
 from pyrogram.types import Message
 from config.config import settings
 from analyzer.mapper import mapper
 from analyzer.ai_cleaner import extract_metadata
-from core.downloader import download_video
 from core.queue_manager import queue_manager
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Створюємо formatter для логів
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Налаштування для консолі
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+# Налаштування для файлу з ротацією (макс 10 МБ, 5 резервних файлів)
+file_handler = RotatingFileHandler(
+    'app.log',
+    maxBytes=10*1024*1024,  # 10 MB
+    backupCount=5,
+    encoding='utf-8'
+)
+file_handler.setFormatter(log_formatter)
+
+# Налаштування root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(console_handler)
+root_logger.addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 # Ensure sessions directory exists
@@ -19,7 +40,6 @@ os.makedirs("sessions", exist_ok=True)
 # Global dictionary to manage waiting states: chat_id -> asyncio.Future
 waiting_for_user_input = {}
 
-# --- Initialize Client (Global) ---
 # --- Initialize Client (Global) ---
 if settings.SESSION_STRING:
     app = Client(
