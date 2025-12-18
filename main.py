@@ -4,6 +4,7 @@ import os
 from logging.handlers import RotatingFileHandler
 from pyrogram import Client, idle, filters
 from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 from config.config import settings
 from analyzer.mapper import mapper
 from analyzer.ai_cleaner import extract_metadata
@@ -151,7 +152,12 @@ async def video_handler(client: Client, message: Message):
     
     if not ai_data or not ai_data.get('title'):
         if status_msg:
-            await status_msg.edit_text("❌ Could not identify anime title.")
+            try:
+                await status_msg.edit_text("❌ Could not identify anime title.")
+            except FloodWait as e:
+                logger.warning(f"FloodWait: need to wait {e.value}s. Skipping status update.")
+            except Exception as e:
+                logger.debug(f"Failed to update status: {e}")
         return
 
     logger.info(f"AI Extracted: {ai_data}")
@@ -166,7 +172,12 @@ async def video_handler(client: Client, message: Message):
         logger.info(f"Found known mapping: {ai_data['title']} -> {mapped_title}")
         final_title = mapped_title
         if status_msg:
-            await status_msg.edit_text(f"✅ Found in DB: `{final_title}`")
+            try:
+                await status_msg.edit_text(f"✅ Found in DB: `{final_title}`")
+            except FloodWait as e:
+                logger.warning(f"FloodWait: need to wait {e.value}s. Skipping status update.")
+            except Exception as e:
+                logger.debug(f"Failed to update status: {e}")
     else:
         # Step C: Ask User
         if status_msg:
@@ -175,12 +186,18 @@ async def video_handler(client: Client, message: Message):
             anitube_url = f"https://anitube.in.ua/index.php?do=search&subaction=search&story={search_query}"
             google_url = f"https://www.google.com/search?q={search_query}+anime"
             
-            await status_msg.edit_text(
-                f"⚠️ Unknown Title: `{ai_data['title']}`.\n"
-                f"🔎 [Anitube]({anitube_url}) | [Google]({google_url})\n\n"
-                f"Please reply with the **Official Romaji Title** to save it (or 'cancel'):",
-                disable_web_page_preview=True
-            )
+            try:
+                await status_msg.edit_text(
+                    f"⚠️ Unknown Title: `{ai_data['title']}`.\n"
+                    f"🔎 [Anitube]({anitube_url}) | [Google]({google_url})\n\n"
+                    f"Please reply with the **Official Romaji Title** to save it (or 'cancel'):",
+                    disable_web_page_preview=True
+                )
+            except FloodWait as e:
+                logger.warning(f"FloodWait: need to wait {e.value}s. Skipping status update.")
+                # Продовжуємо виконання, чекаємо на відповідь користувача
+            except Exception as e:
+                logger.debug(f"Failed to update status: {e}")
             
             # Wait for response
             loop = asyncio.get_running_loop()
@@ -191,21 +208,41 @@ async def video_handler(client: Client, message: Message):
                 user_reply = await asyncio.wait_for(future, timeout=300) # 5 min
                 
                 if user_reply.lower() == "cancel":
-                    await status_msg.edit_text("❌ Cancelled by user.")
+                    try:
+                        await status_msg.edit_text("❌ Cancelled by user.")
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait: need to wait {e.value}s")
+                    except Exception as e:
+                        logger.debug(f"Failed to update status: {e}")
                     del waiting_for_user_input[message.chat.id]
                     return
                     
                 # Save
                 mapper.add_mapping(ai_data['title'], user_reply)
                 final_title = user_reply
-                await status_msg.edit_text(f"✅ Saved & Using: `{final_title}`")
+                try:
+                    await status_msg.edit_text(f"✅ Saved & Using: `{final_title}`")
+                except FloodWait as e:
+                    logger.warning(f"FloodWait: need to wait {e.value}s")
+                except Exception as e:
+                    logger.debug(f"Failed to update status: {e}")
                 
             except asyncio.TimeoutError:
-                await status_msg.edit_text("❌ Timeout waiting for input.")
+                try:
+                    await status_msg.edit_text("❌ Timeout waiting for input.")
+                except FloodWait as e:
+                    logger.warning(f"FloodWait: need to wait {e.value}s")
+                except Exception as e:
+                    logger.debug(f"Failed to update status: {e}")
                 return
             except Exception as e:
                 logger.error(f"Error waiting for input: {e}")
-                await status_msg.edit_text(f"❌ Error: {e}")
+                try:
+                    await status_msg.edit_text(f"❌ Error: {e}")
+                except FloodWait as fw:
+                    logger.warning(f"FloodWait: need to wait {fw.value}s")
+                except Exception as edit_err:
+                    logger.debug(f"Failed to update status: {edit_err}")
                 return
             finally:
                 waiting_for_user_input.pop(message.chat.id, None)

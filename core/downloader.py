@@ -3,23 +3,32 @@ import logging
 import time
 from pyrogram import Client
 from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 from config.config import settings
 from core.renamer import get_target_path, generate_filename
 
 logger = logging.getLogger(__name__)
 
+# Словник для відстеження останнього часу редагування повідомлень
+last_edit_time = {}
+
 async def progress_bar(current, total, status_msg: Message, start_time):
     """
     Updates the progress bar in the Telegram message log.
-    Optimization: Edit message only every 3 seconds or on completion.
+    Optimization: Edit message only every 5 seconds or on completion.
     """
     if not status_msg:
         return
 
     now = time.time()
-    if (now - start_time) < 3 and current != total:
-        return
-
+    msg_id = status_msg.id
+    
+    # Перевірка мінімального інтервалу (5 секунд)
+    if msg_id in last_edit_time:
+        time_since_last_edit = now - last_edit_time[msg_id]
+        if time_since_last_edit < 5 and current != total:
+            return
+    
     percentage = current * 100 / total
     speed = current / (now - start_time) if (now - start_time) > 0 else 0
     elapsed_time = round(now - start_time)
@@ -31,8 +40,11 @@ async def progress_bar(current, total, status_msg: Message, start_time):
             f"Speed: {speed/1024/1024:.2f} MB/s\n"
             f"Elapsed: {elapsed_time}s"
         )
-    except Exception:
-        pass 
+        last_edit_time[msg_id] = now
+    except FloodWait as e:
+        logger.warning(f"FloodWait caught: need to wait {e.value} seconds. Skipping update.")
+    except Exception as e:
+        logger.debug(f"Failed to update progress: {e}") 
 
 async def download_video(client: Client, message: Message, metadata: dict, status_msg: Message = None):
     """
@@ -87,7 +99,12 @@ async def download_video(client: Client, message: Message, metadata: dict, statu
             # Normalize slashes for Windows look
             display_path = display_path.replace("/", "\\")
             
-            await status_msg.edit_text(f"✅ Download Complete!\nSaved to: `{display_path}`")
+            try:
+                await status_msg.edit_text(f"✅ Download Complete!\nSaved to: `{display_path}`")
+            except FloodWait as e:
+                logger.warning(f"FloodWait on completion message: need to wait {e.value}s")
+            except Exception as e:
+                logger.debug(f"Failed to update completion message: {e}")
             
         logger.info(f"Download completed: {downloaded_path}")
         return downloaded_path
@@ -95,7 +112,12 @@ async def download_video(client: Client, message: Message, metadata: dict, statu
     except Exception as e:
         logger.error(f"Download failed: {e}")
         if status_msg:
-            await status_msg.edit_text(f"❌ Error during download: {e}")
+            try:
+                await status_msg.edit_text(f"❌ Error during download: {e}")
+            except FloodWait as fw:
+                logger.warning(f"FloodWait on error message: need to wait {fw.value}s")
+            except Exception as edit_err:
+                logger.debug(f"Failed to update error message: {edit_err}")
         if os.path.exists(target_path):
             os.remove(target_path)
         return None
