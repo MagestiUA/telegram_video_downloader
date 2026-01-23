@@ -9,6 +9,7 @@ from config.config import settings
 from analyzer.mapper import mapper
 from analyzer.ai_cleaner import extract_metadata
 from core.queue_manager import queue_manager
+from urllib.parse import quote
 
 # Setup logging
 # Створюємо formatter для логів
@@ -124,6 +125,20 @@ async def text_handler(client: Client, message: Message):
     # Ignore other text messages
     pass
 
+async def ask_user(chat_id: int, prompt: str, status_msg: Message, timeout=300):
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    waiting_for_user_input[chat_id] = future
+
+    try:
+        await status_msg.edit_text(prompt)
+        reply = await asyncio.wait_for(future, timeout=timeout)
+        if reply.lower() == "cancel":
+            return None
+        return reply
+    finally:
+        waiting_for_user_input.pop(chat_id, None)
+
 @app.on_message(auth_filter & (filters.video | filters.document))
 async def video_handler(client: Client, message: Message):
     # Filter for videos
@@ -151,14 +166,64 @@ async def video_handler(client: Client, message: Message):
     ai_data = await extract_metadata(text_to_analyze)
     
     if not ai_data or not ai_data.get('title'):
-        if status_msg:
+        # if status_msg:
+        #     try:
+        #         await status_msg.edit_text("❌ Could not identify anime title.")
+        #     except FloodWait as e:
+        #         logger.warning(f"FloodWait: need to wait {e.value}s. Skipping status update.")
+        #     except Exception as e:
+        #         logger.debug(f"Failed to update status: {e}")
+        # return
+        if not ai_data or not ai_data.get('title'):
+            if not status_msg:
+                return
+
             try:
-                await status_msg.edit_text("❌ Could not identify anime title.")
+                # 1️⃣ Title
+                title = await ask_user(
+                    message.chat.id,
+                    "⚠️ AI failed.\n\nPlease reply with the **Official Romaji Title** (or `cancel`):",
+                    status_msg
+                )
+                if not title:
+                    await status_msg.edit_text("❌ Cancelled by user.")
+                    return
+
+                # 2️⃣ Episode
+                episode = await ask_user(
+                    message.chat.id,
+                    "📺 Enter **Episode number**:",
+                    status_msg
+                )
+                if not episode or not episode.isdigit():
+                    await status_msg.edit_text("❌ Invalid episode.")
+                    return
+
+                # 3️⃣ Season
+                season = await ask_user(
+                    message.chat.id,
+                    "📀 Enter **Season number**:",
+                    status_msg
+                )
+                if not season or not season.isdigit():
+                    await status_msg.edit_text("❌ Invalid season.")
+                    return
+
+                ai_data = {
+                    "title": title.strip(),
+                    "episode": int(episode),
+                    "season": int(season)
+                }
+
+                await status_msg.edit_text(
+                    f"✅ Manual data set:\n"
+                    f"**{ai_data['title']}**\n"
+                    f"S{ai_data['season']}E{ai_data['episode']}"
+                )
+
             except FloodWait as e:
-                logger.warning(f"FloodWait: need to wait {e.value}s. Skipping status update.")
-            except Exception as e:
-                logger.debug(f"Failed to update status: {e}")
-        return
+                logger.warning(f"FloodWait: wait {e.value}s")
+                return
 
     logger.info(f"AI Extracted: {ai_data}")
     
@@ -166,7 +231,7 @@ async def video_handler(client: Client, message: Message):
     mapped_title = mapper.get_mapping(ai_data['title'])
     final_title = None
     
-    from urllib.parse import quote
+
 
     if mapped_title:
         logger.info(f"Found known mapping: {ai_data['title']} -> {mapped_title}")

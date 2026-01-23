@@ -85,7 +85,8 @@ config = types.GenerateContentConfig(
 # MODEL_NAME = "gemma-2-9b-it" # Fallback to stable 2.0 or 2-9b if 3-4b is experimental/Vertex only?
 # User successfully used 'gemma-3-4b-it' with old SDK. It should work here too.
 # MODEL_NAME = "gemma-3-4b-it"
-MODEL_NAME = "gemma-3-12b-it"
+# MODEL_NAME = "gemma-3-12b-it"
+MODEL_NAME = "gemma-3-27b-it"
 
 # SYSTEM_PROMPT = """
 # You are an Anime Metadata Extractor. Your task is to analyze 'dirty' filenames or telegram captions and extract clean metadata.
