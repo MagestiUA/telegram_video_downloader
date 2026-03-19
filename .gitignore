@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Logs
+*.log
+app.log*
+
+# Environment
+.env
+
+# Pyrogram sessions
+sessions/
+*.session
+*.session-journal
+
+# Project specific
+mappings.json
+README.zip
+
+# Debug/test scripts (local only)
+debug_models.py
+test_gemini_response.py
