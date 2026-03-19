@@ -121,6 +121,44 @@ RULES:
     - Only assign a season number if no explicit episode indicator is present.
 """
 
+EPISODE_SYSTEM_PROMPT = """
+You are an episode number extractor.
+You will be given the anime title, season number, and a text (filename or caption).
+Extract ONLY the episode number from the text.
+Return ONLY valid JSON: {"episode": <integer>}
+If no episode number found, return {"episode": null}.
+No markdown, no extra text.
+"""
+
+async def extract_episode(text: str, title: str, season: int) -> int | None:
+    """
+    Extracts only the episode number given known title and season.
+    Used in Batch mode.
+    """
+    try:
+        await rate_limiter.acquire()
+        contents = (
+            f"{EPISODE_SYSTEM_PROMPT}\n\n"
+            f"Anime: {title}\nSeason: {season}\nText: {text}"
+        )
+        response = await client.aio.models.generate_content(
+            model=MODEL_NAME, contents=contents, config=config
+        )
+        clean = response.text.strip()
+        if clean.startswith("```json"):
+            clean = clean[7:]
+        if clean.startswith("```"):
+            clean = clean[3:]
+        if clean.endswith("```"):
+            clean = clean[:-3]
+        data = json.loads(clean.strip())
+        ep = data.get("episode")
+        return int(ep) if ep is not None else None
+    except Exception as e:
+        logger.error(f"Error extracting episode: {e}")
+        return None
+
+
 async def extract_metadata(text: str) -> dict | None:
     """
     Extracts anime metadata using Google Gemini (New SDK).
