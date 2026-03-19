@@ -1,0 +1,63 @@
+name: tg-video-downloader
+
+services:
+  tg_video_downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-video-downloader:latest
+    container_name: tg_video_downloader
+    restart: unless-stopped
+    environment:
+      - API_ID=
+      - API_HASH=
+      - BOT_TOKEN=
+      - GEMINI_API_KEY=
+      - DOWNLOAD_PATH=/data/downloads
+      - ALLOWED_USERS=
+      - SESSION_STRING=
+    volumes:
+      - /path/to/your/anime:/data/downloads
+      - /DATA/AppData/tg-video-downloader/sessions:/app/sessions
+    x-casaos:
+      envs:
+        - container: API_ID
+          description:
+            en_us: "Telegram API ID (from my.telegram.org)"
+        - container: API_HASH
+          description:
+            en_us: "Telegram API Hash (from my.telegram.org)"
+        - container: BOT_TOKEN
+          description:
+            en_us: "Bot token from @BotFather"
+        - container: GEMINI_API_KEY
+          description:
+            en_us: "Google Gemini API key (from aistudio.google.com)"
+        - container: ALLOWED_USERS
+          description:
+            en_us: "Allowed Telegram User IDs, comma-separated (send /id to the bot to find yours)"
+        - container: SESSION_STRING
+          description:
+            en_us: "Pyrogram session string — required for Docker (avoids interactive login)"
+      volumes:
+        - container: /data/downloads
+          description:
+            en_us: "Folder where downloaded videos will be saved"
+        - container: /app/sessions
+          description:
+            en_us: "Pyrogram session storage (AppData)"
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: tg_video_downloader
+  description:
+    en_us: "Telegram bot that automatically downloads anime videos from channels and organizes them using Google Gemini AI metadata extraction."
+  tagline:
+    en_us: "Anime video downloader with AI"
+  icon: "https://cdn.jsdelivr.net/gh/selfhst/icons/png/telegram.png"
+  title:
+    en_us: "TG Video Downloader"
+  category: "Downloader"
+  port_map: ""
