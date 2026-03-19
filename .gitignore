@@ -26,6 +26,9 @@ app.log*
 # Environment
 .env
 
+# Docker compose with real credentials (use docker-compose.template.yml for reference)
+docker-compose.yml
+
 # Pyrogram sessions
 sessions/
 *.session

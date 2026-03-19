@@ -4,6 +4,22 @@ All notable changes are documented here.
 
 ---
 
+## [2026-03-19] - CasaOS Support, UX Improvements & Batch Mode
+
+### Added
+- **CasaOS compatibility** — `docker-compose.yml` now includes `x-casaos` labels with field descriptions; all settings are configurable via CasaOS UI without editing any files
+- **`.dockerignore`** — prevents `.env`, sessions, venv, and logs from being baked into the Docker image
+- **Queue-done notification in Batch mode** — single "✅ Всі завантаження завершено!" message with mode keyboard is sent once after the last download completes (replaces per-message buttons)
+
+### Changed
+- `docker-compose.yml`: replaced `env_file: .env` with an explicit `environment:` block (empty defaults) — CasaOS/Docker fill values at runtime; `.env` file remains the local dev fallback via pydantic-settings priority
+- Normal mode: all user prompts (AI failure fallback, unknown title confirmation) now sent as new messages via `ask_user_fresh()` — consistent UX with Batch mode, questions always visible at the bottom of chat
+
+### Fixed
+- `.env` file no longer leaks into Docker image — `COPY . .` is now guarded by `.dockerignore`
+
+---
+
 ## [2026-03-19] - Batch Mode, Help Command & Mode Switching
 
 ### Added

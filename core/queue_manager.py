@@ -10,12 +10,12 @@ class QueueManager:
     def __init__(self):
         self.queue = asyncio.Queue()
 
-    async def add_task(self, client: Client, message: Message, metadata: dict, status_msg: Message = None):
+    async def add_task(self, client: Client, message: Message, metadata: dict, status_msg: Message = None, reply_markup=None):
         """
         Adds a download task to the queue.
         """
         q_size = self.queue.qsize()
-        await self.queue.put((client, message, metadata, status_msg))
+        await self.queue.put((client, message, metadata, status_msg, reply_markup))
         
         logger.info(f"Task added to queue. Current queue size: {q_size + 1}")
         
@@ -39,15 +39,26 @@ class QueueManager:
         while True:
             try:
                 # Wait for a task
-                client, message, metadata, status_msg = await self.queue.get()
-                
+                client, message, metadata, status_msg, reply_markup = await self.queue.get()
+
                 try:
                     if status_msg:
                         await status_msg.edit_text("🔄 Починаю завантаження...")
-                    
+
                     # Execute the download
                     await download_video(client, message, metadata, status_msg)
-                    
+
+                    # After download: if queue is now empty and we have a keyboard → notify once
+                    if self.queue.empty() and reply_markup is not None:
+                        try:
+                            await client.send_message(
+                                message.chat.id,
+                                "✅ Всі завантаження завершено!",
+                                reply_markup=reply_markup
+                            )
+                        except Exception as notify_err:
+                            logger.warning(f"Failed to send queue-done notification: {notify_err}")
+
                 except Exception as e:
                     logger.error(f"Worker processing error: {e}")
                     if status_msg:

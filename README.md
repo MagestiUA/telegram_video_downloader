@@ -14,6 +14,7 @@ A Telegram userbot/bot that automatically downloads videos from channels and cha
 - **Rate limiting** — token-bucket limiter keeps Gemini API calls under 10 req/min
 - **Rotating log** — `app.log` with 10 MB cap and 5 backup files, mirrored to stdout for `docker logs`
 - **Docker-ready** — single `docker-compose up -d` to run on a Linux server
+- **CasaOS-compatible** — install and configure directly from the CasaOS UI without editing any files
 
 ## Operating Modes
 
@@ -47,7 +48,7 @@ tg_video_downloader/
 │   ├── ai_cleaner.py      # Gemini API: full metadata + episode-only extraction
 │   └── mapper.py          # Persistent title mapping (JSON)
 ├── sessions/              # Pyrogram session files (git-ignored)
-├── .env                   # Secrets (git-ignored)
+├── .env                   # Secrets for local dev (git-ignored)
 └── .env.template          # Example env file
 ```
 
@@ -58,31 +59,37 @@ tg_video_downloader/
 - Bot token from [@BotFather](https://t.me/BotFather)
 - Google Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
 
+## Configuration
+
+All settings are read from **environment variables**. Priority order:
+1. OS environment (Docker `environment:` block, CasaOS UI) — highest priority
+2. `.env` file — fallback for local development
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `API_ID` | ✅ | Telegram API ID from my.telegram.org |
+| `API_HASH` | ✅ | Telegram API Hash from my.telegram.org |
+| `BOT_TOKEN` | ✅ | Bot token from @BotFather |
+| `GEMINI_API_KEY` | ✅ | Google Gemini API key |
+| `DOWNLOAD_PATH` | — | Download folder inside container (default: `/data/downloads`) |
+| `ALLOWED_USERS` | — | Comma-separated Telegram user IDs allowed to use the bot |
+| `SESSION_STRING` | — | Pyrogram session string — required for Docker (avoids interactive login) |
+
+`ALLOWED_USERS`: send `/id` to the bot to find your Telegram user ID.
+
 ## Setup
 
-### 1. Environment variables
+### Option A: CasaOS (recommended for home servers)
 
-Copy `.env.template` to `.env` and fill in your values:
+1. In CasaOS → **App Store** → **Custom Install** → paste the contents of `docker-compose.yml`
+2. Fill in credentials directly in the CasaOS UI — Volumes and Environment Variables sections
+3. Click **Submit**
 
-```env
-API_ID=your_telegram_api_id
-API_HASH=your_telegram_api_hash
-BOT_TOKEN=your_bot_token
+All fields have inline descriptions. No file editing required.
 
-GEMINI_API_KEY=your_gemini_api_key
+### Option B: Docker (standard)
 
-DOWNLOAD_PATH=/data/downloads
-ALLOWED_USERS=123456789,987654321
-
-# Optional: session string for Docker (avoids interactive login)
-SESSION_STRING=
-```
-
-`ALLOWED_USERS` is a comma-separated list of Telegram user IDs permitted to use the bot. Send `/id` to the bot to find yours.
-
-### 2. Run with Docker (recommended)
-
-Edit the volume paths in `docker-compose.yml` to match your setup, then:
+Edit `docker-compose.yml` — fill in the empty `environment:` values, then:
 
 ```bash
 docker-compose build
@@ -95,7 +102,13 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### 3. Run locally
+### Option C: Local development
+
+Copy `.env.template` to `.env` and fill in your values:
+
+```bash
+cp .env.template .env
+```
 
 ```bash
 python -m venv .venv

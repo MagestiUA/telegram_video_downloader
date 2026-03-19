@@ -425,7 +425,11 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
             "season":  season,
             "episode": episode,
         }
-        await queue_manager.add_task(client, message, metadata, status_msg=status_msg)
+        await queue_manager.add_task(
+            client, message, metadata,
+            status_msg=status_msg,
+            reply_markup=mode_keyboard(BotMode.BATCH)
+        )
 
 
 # --- Normal Mode Handler ---
@@ -469,51 +473,42 @@ async def video_handler(client: Client, message: Message):
     ai_data = await extract_metadata(text_to_analyze)
 
     if not ai_data or not ai_data.get('title'):
-        if not status_msg:
+        title = await ask_user_fresh(
+            message.chat.id,
+            "⚠️ AI failed.\n\nReply with the **Official Romaji Title** _(or `cancel`)_:"
+        )
+        if not title:
+            if status_msg:
+                try: await status_msg.edit_text("❌ Cancelled by user.")
+                except Exception: pass
             return
 
-        try:
-            title = await ask_user(
-                message.chat.id,
-                "⚠️ AI failed.\n\nPlease reply with the **Official Romaji Title** (or `cancel`):",
-                status_msg
-            )
-            if not title:
-                await status_msg.edit_text("❌ Cancelled by user.")
-                return
-
-            episode = await ask_user(
-                message.chat.id,
-                "📺 Enter **Episode number**:",
-                status_msg
-            )
-            if not episode or not episode.isdigit():
-                await status_msg.edit_text("❌ Invalid episode.")
-                return
-
-            season = await ask_user(
-                message.chat.id,
-                "📀 Enter **Season number**:",
-                status_msg
-            )
-            if not season or not season.isdigit():
-                await status_msg.edit_text("❌ Invalid season.")
-                return
-
-            ai_data = {
-                "title":   title.strip(),
-                "episode": int(episode),
-                "season":  int(season),
-            }
-            await status_msg.edit_text(
-                f"✅ Manual data set:\n"
-                f"**{ai_data['title']}**\n"
-                f"S{ai_data['season']:02d}E{ai_data['episode']:02d}"
-            )
-
-        except FloodWait as e:
-            logger.warning(f"FloodWait: wait {e.value}s")
+        episode = await ask_user_fresh(message.chat.id, "📺 Enter **Episode number** _(or `cancel`)_:")
+        if not episode or not episode.isdigit():
+            if status_msg:
+                try: await status_msg.edit_text("❌ Invalid episode.")
+                except Exception: pass
             return
+
+        season = await ask_user_fresh(message.chat.id, "📀 Enter **Season number** _(or `cancel`)_:")
+        if not season or not season.isdigit():
+            if status_msg:
+                try: await status_msg.edit_text("❌ Invalid season.")
+                except Exception: pass
+            return
+
+        ai_data = {
+            "title":   title.strip(),
+            "episode": int(episode),
+            "season":  int(season),
+        }
+        if status_msg:
+            try:
+                await status_msg.edit_text(
+                    f"✅ Manual data set:\n**{ai_data['title']}**\n"
+                    f"S{ai_data['season']:02d}E{ai_data['episode']:02d}"
+                )
+            except Exception: pass
 
     logger.info(f"AI Extracted: {ai_data}")
 
@@ -533,70 +528,27 @@ async def video_handler(client: Client, message: Message):
                 logger.debug(f"Failed to update status: {e}")
     else:
         # Step C: Ask user for official title
+        search_query = quote(ai_data['title'])
+        anitube_url = f"https://anitube.in.ua/index.php?do=search&subaction=search&story={search_query}"
+        google_url  = f"https://www.google.com/search?q={search_query}+anime"
+
+        user_reply = await ask_user_fresh(
+            message.chat.id,
+            f"⚠️ Unknown Title: `{ai_data['title']}`\n"
+            f"🔎 [Anitube]({anitube_url}) | [Google]({google_url})\n\n"
+            f"Reply with the **Official Romaji Title** to save it _(or `cancel`)_:"
+        )
+        if not user_reply:
+            if status_msg:
+                try: await status_msg.edit_text("❌ Cancelled by user.")
+                except Exception: pass
+            return
+
+        mapper.add_mapping(ai_data['title'], user_reply)
+        final_title = user_reply
         if status_msg:
-            search_query = quote(ai_data['title'])
-            anitube_url = f"https://anitube.in.ua/index.php?do=search&subaction=search&story={search_query}"
-            google_url  = f"https://www.google.com/search?q={search_query}+anime"
-
-            try:
-                await status_msg.edit_text(
-                    f"⚠️ Unknown Title: `{ai_data['title']}`.\n"
-                    f"🔎 [Anitube]({anitube_url}) | [Google]({google_url})\n\n"
-                    f"Please reply with the **Official Romaji Title** to save it (or 'cancel'):",
-                    disable_web_page_preview=True
-                )
-            except FloodWait as e:
-                logger.warning(f"FloodWait: need to wait {e.value}s. Skipping status update.")
-            except Exception as e:
-                logger.debug(f"Failed to update status: {e}")
-
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            waiting_for_user_input[message.chat.id] = future
-
-            try:
-                user_reply = await asyncio.wait_for(future, timeout=300)
-
-                if user_reply.lower() == "cancel":
-                    try:
-                        await status_msg.edit_text("❌ Cancelled by user.")
-                    except FloodWait as e:
-                        logger.warning(f"FloodWait: need to wait {e.value}s")
-                    except Exception as e:
-                        logger.debug(f"Failed to update status: {e}")
-                    return
-
-                mapper.add_mapping(ai_data['title'], user_reply)
-                final_title = user_reply
-                try:
-                    await status_msg.edit_text(f"✅ Saved & Using: `{final_title}`")
-                except FloodWait as e:
-                    logger.warning(f"FloodWait: need to wait {e.value}s")
-                except Exception as e:
-                    logger.debug(f"Failed to update status: {e}")
-
-            except asyncio.TimeoutError:
-                try:
-                    await status_msg.edit_text("❌ Timeout waiting for input.")
-                except FloodWait as e:
-                    logger.warning(f"FloodWait: need to wait {e.value}s")
-                except Exception as e:
-                    logger.debug(f"Failed to update status: {e}")
-                return
-            except Exception as e:
-                logger.error(f"Error waiting for input: {e}")
-                try:
-                    await status_msg.edit_text(f"❌ Error: {e}")
-                except FloodWait as fw:
-                    logger.warning(f"FloodWait: need to wait {fw.value}s")
-                except Exception as edit_err:
-                    logger.debug(f"Failed to update status: {edit_err}")
-                return
-            finally:
-                waiting_for_user_input.pop(message.chat.id, None)
-        else:
-            logger.warning("Cannot ask user (no status_msg). Using raw AI title.")
-            final_title = ai_data['title']
+            try: await status_msg.edit_text(f"✅ Saved & Using: `{final_title}`")
+            except Exception: pass
 
     # Step D: Queue download
     safe_canonical_name = "".join(c for c in final_title if c.isalnum() or c in " .()_-").strip()
