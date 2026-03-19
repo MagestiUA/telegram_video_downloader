@@ -1,59 +1,54 @@
 # Changelog
 
-Всі важливі зміни в проекті документуються тут.
+All notable changes are documented here.
 
-## [2025-12-18] - Виправлення Race Condition та Покращення
+---
 
-### Виправлено
-- **Race condition в Pyrogram** - замінено самописний багатопотоковий завантажувач на вбудований `download_media()`
-  - Усунуто помилку: `RuntimeError: read() called while another coroutine is already waiting for incoming data`
-  - Спрощено `core/downloader.py` з 231 до 102 рядків (-56%)
+## [2026-03-19] - Batch Mode, Help Command & Mode Switching
 
-### Додано
-- **Логування у файл** з автоматичною ротацією
-  - Файл: `app.log`
-  - Максимальний розмір: 10 МБ
-  - Резервні копії: 5 файлів
-  - Подвійне логування: консоль + файл
-- **`.gitignore`** для виключення логів, sessions, .env з git
+### Added
+- **Batch Mode** — new operating mode for downloading groups of poorly-named episodes
+  - Title and season are set once per session, then each video gets episode-only AI extraction
+  - Completely isolated from `mappings.json` (no reads or writes) to prevent garbage accumulation
+  - 30-minute inactivity timer resets on each new video; session also ends via button
+  - Sequential per-chat processing via `asyncio.Lock`
+- **`/help` command** — describes both modes with inline keyboard for quick switching
+- **`/mode` command** — inline keyboard to switch between Normal and Batch mode
+- **`⏹ End Session` button** — manually ends Batch session and returns to Normal mode
+- **`extract_episode()` in `ai_cleaner.py`** — focused AI prompt that extracts only episode number given a known title and season
 
-### Видалено
-- Невикористовуваний імпорт `download_video` з `main.py`
-- Дублікат коментаря в `main.py`
-- Дублікат поля `GEMINI_API_KEY` в `config.py`
-- Функція `download_chunk()` та всі константи багатопотокового завантажувача
+### Changed
+- `video_handler` now branches on current mode before processing
+- Initial status message shows filename instead of raw text-to-analyze
+- Access control filter (`is_authorized`) now typed as generic `update` to support both `Message` and `CallbackQuery`
 
-### Технічні деталі
+### Fixed
+- Duplicate `if not ai_data` condition in `video_handler` (dead inner check removed)
+- Stale blank lines in `video_handler` after condition cleanup
 
-**До змін:**
-```python
-# Складна логіка з 4 воркерами, locks, manual chunking
-async def download_chunk(...): # ~60 рядків
-for i in range(WORKERS):
-    tasks.append(download_chunk(...))
-await asyncio.gather(*tasks)
-```
+---
 
-**Після змін:**
-```python
-# Простий виклик
-downloaded_path = await client.download_media(
-    message,
-    file_name=target_path,
-    progress=progress
-)
-```
+## [2025-12-18] - Race Condition Fix & Improvements
 
-## Попередні Версії
+### Fixed
+- **Race condition in Pyrogram** — replaced custom multi-threaded downloader with built-in `download_media()`
+  - Eliminated: `RuntimeError: read() called while another coroutine is already waiting for incoming data`
+  - Simplified `core/downloader.py` from 231 to 102 lines (−56%)
 
-### [2025-12-17] - Rate Limiting для AI API
-- Додано обмеження запитів до Google Gemini (10 запитів/хв)
-- Використано алгоритм Token Bucket
+### Added
+- **Rotating file log** — `app.log`, max 10 MB, 5 backups, mirrored to stdout
+- **`.gitignore`** — excludes logs, sessions, `.env`, `.venv`, `.idea`, debug scripts
 
-### [2025-12-17] - Черга Завантажень
-- Реалізовано послідовну обробку завантажень
-- Додано `QueueManager` для уникнення одночасних завантажень
+### Removed
+- Unused `download_video` import in `main.py`
+- Duplicate `GEMINI_API_KEY` field in `config.py`
+- `download_chunk()` function and all multi-threaded downloader constants
 
-### [2025-12-17] - Міграція на новий AI SDK
-- Оновлено з `google-generativeai` на `google-genai`
-- Адаптовано код під новий API
+---
+
+## [2025-12-17] - Rate Limiting, Download Queue, AI SDK Migration
+
+### Added
+- Rate limiter for Google Gemini API (10 req/min, token-bucket algorithm)
+- `QueueManager` — sequential download queue to avoid concurrent downloads
+- Migrated from `google-generativeai` to `google-genai` SDK

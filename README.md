@@ -1,22 +1,42 @@
 # Telegram Video Downloader Bot
 
-A Telegram userbot/bot that automatically downloads videos from channels and chats, uses Google Gemini AI to extract anime titles, and organizes files into a clean folder structure.
+> 🇺🇦 [Українська версія](README.uk.md)
+
+A Telegram userbot/bot that automatically downloads videos from channels and chats, uses Google Gemini AI to extract anime metadata, and organizes files into a clean folder structure.
 
 ## Features
 
-- **AI-powered title extraction** — Google Gemini analyzes messy filenames and captions to identify anime title, season, and episode number
+- **AI-powered metadata extraction** — Google Gemini analyzes messy filenames and captions to identify anime title, season, and episode number
+- **Two operating modes** — Normal (per-video AI analysis) and Batch (set title+season once, extract episodes in bulk)
 - **Download queue** — sequential processing to avoid overloading the connection
 - **Auto file organization** — creates per-show folders and renames files to `Show Title - S01E05.mp4`
-- **Title mapper** — remembers user-confirmed title corrections in `mappings.json` for future use
+- **Title mapper** — remembers user-confirmed title corrections in `mappings.json` for future use _(Normal mode only)_
 - **Rate limiting** — token-bucket limiter keeps Gemini API calls under 10 req/min
 - **Rotating log** — `app.log` with 10 MB cap and 5 backup files, mirrored to stdout for `docker logs`
 - **Docker-ready** — single `docker-compose up -d` to run on a Linux server
+
+## Operating Modes
+
+### 📥 Normal Mode _(default)_
+Each video is analyzed independently. AI extracts title, season, and episode from the caption or filename.
+- If the title is already in the local DB (`mappings.json`) → downloads immediately
+- If the title is new → bot asks for the official name, saves it, then downloads
+- If AI fails completely → bot prompts for manual title / episode / season entry
+
+### 📦 Batch Mode
+Best for series where AI keeps misidentifying every episode as S01E01.
+- Activate via `/mode` → **Batch** button
+- **First video:** AI suggests title (you confirm or correct) → you set the season once
+- **Each video:** AI extracts only the episode number using the known title+season context
+- If episode extraction fails → bot asks for the episode number
+- Completely isolated from `mappings.json` — no reads or writes
+- Session ends after **30 min of inactivity** or via the **⏹ End Session** button
 
 ## Architecture
 
 ```
 tg_video_downloader/
-├── main.py                 # Entry point: Pyrogram client, message handlers
+├── main.py                 # Entry point: Pyrogram client, handlers, mode logic
 ├── config/
 │   └── config.py          # Pydantic-settings configuration
 ├── core/
@@ -24,7 +44,7 @@ tg_video_downloader/
 │   ├── queue_manager.py   # Async download queue (sequential worker)
 │   └── renamer.py         # Filename / folder path generation
 ├── analyzer/
-│   ├── ai_cleaner.py      # Gemini API integration + rate limiter
+│   ├── ai_cleaner.py      # Gemini API: full metadata + episode-only extraction
 │   └── mapper.py          # Persistent title mapping (JSON)
 ├── sessions/              # Pyrogram session files (git-ignored)
 ├── .env                   # Secrets (git-ignored)
@@ -34,9 +54,9 @@ tg_video_downloader/
 ## Requirements
 
 - Python 3.11+
-- A Telegram account with API credentials from [my.telegram.org](https://my.telegram.org)
-- A bot token from [@BotFather](https://t.me/BotFather)
-- A Google Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- Telegram API credentials from [my.telegram.org](https://my.telegram.org)
+- Bot token from [@BotFather](https://t.me/BotFather)
+- Google Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
 
 ## Setup
 
@@ -58,7 +78,7 @@ ALLOWED_USERS=123456789,987654321
 SESSION_STRING=
 ```
 
-`ALLOWED_USERS` is a comma-separated list of Telegram user IDs permitted to use the bot. Send `/id` to the bot to get your ID.
+`ALLOWED_USERS` is a comma-separated list of Telegram user IDs permitted to use the bot. Send `/id` to the bot to find yours.
 
 ### 2. Run with Docker (recommended)
 
@@ -89,16 +109,14 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## Usage
+## Commands
 
-1. Add your Telegram user ID to `ALLOWED_USERS` (use `/id` to find it).
-2. Send the bot a video, or forward one from a channel.
-3. The bot will:
-   - Analyze the caption/filename with Gemini AI
-   - If the title is already in the mapper — download immediately
-   - If the title is new — ask you to confirm the official title, save it, then download
-   - If AI fails completely — prompt you to enter title, episode, and season manually
-4. The file is saved to `DOWNLOAD_PATH/<Show Title>/<Show Title> - S01E05.mp4`
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome message and your User ID |
+| `/id` | Get your Telegram User ID |
+| `/help` | Show help and mode descriptions |
+| `/mode` | Switch between Normal and Batch mode |
 
 ## File Naming
 
