@@ -265,6 +265,7 @@ async def text_handler(client: Client, message: Message):
 # --- Shared Utilities ---
 
 async def ask_user(chat_id: int, prompt: str, status_msg: Message, timeout: int = 300) -> str | None:
+    """Asks a question by EDITING an existing status message."""
     loop = asyncio.get_running_loop()
     future = loop.create_future()
     waiting_for_user_input[chat_id] = future
@@ -278,13 +279,43 @@ async def ask_user(chat_id: int, prompt: str, status_msg: Message, timeout: int 
         waiting_for_user_input.pop(chat_id, None)
 
 
+async def ask_user_fresh(chat_id: int, prompt: str, timeout: int = 300) -> str | None:
+    """Asks a question by SENDING A NEW message (always appears at bottom of chat)."""
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    waiting_for_user_input[chat_id] = future
+    try:
+        await app.send_message(chat_id, prompt)
+        reply = await asyncio.wait_for(future, timeout=timeout)
+        if reply.lower() == "cancel":
+            return None
+        return reply
+    except asyncio.TimeoutError:
+        try:
+            await app.send_message(chat_id, "❌ Timeout. No reply received.")
+        except Exception:
+            pass
+        return None
+    finally:
+        waiting_for_user_input.pop(chat_id, None)
+
+
 # --- Batch Mode Handler ---
 
 async def handle_batch_video(client: Client, message: Message, status_msg: Message):
     chat_id = message.chat.id
+    media   = message.video or message.document
+    filename_hint = (media.file_name if media else "") or "video.mp4"
 
     if chat_id not in batch_locks:
         batch_locks[chat_id] = asyncio.Lock()
+
+    # If lock is already held → show "in queue" immediately so the user knows bot is alive
+    if batch_locks[chat_id].locked():
+        try:
+            await status_msg.edit_text(f"⏳ In queue: `{filename_hint[:60]}`")
+        except Exception:
+            pass
 
     async with batch_locks[chat_id]:
         # Mode may have changed while waiting for the lock
@@ -295,48 +326,49 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
         reset_batch_timer(chat_id)
 
         state = batch_states.get(chat_id, {})
-        media = message.video or message.document
 
         # ── SETUP PHASE: get title & season (first video only) ──────────────
+        # All questions are sent as NEW messages so they always appear at the
+        # bottom of the chat and never get buried under incoming video messages.
         if not state.get("title"):
-            text_to_analyze = message.caption or (media.file_name if media else "") or "video"
-
             try:
-                await status_msg.edit_text("🧐 Batch setup: analyzing title...")
+                await status_msg.edit_text(f"⚙️ `{filename_hint[:60]}` — analyzing title...")
             except Exception:
                 pass
 
-            # AI suggestion — batch mode never touches mappings.json
-            ai_data = await extract_metadata(text_to_analyze)
+            text_to_analyze = message.caption or filename_hint
+            ai_data   = await extract_metadata(text_to_analyze)
             raw_title = ai_data.get("title") if ai_data else None
 
             if raw_title:
-                prompt = (
+                title_prompt = (
                     f"🔎 AI detected: `{raw_title}`\n\n"
-                    f"Reply with the **Official Romaji Title** to confirm/correct (or `cancel`):"
+                    f"Reply with the **Official Romaji Title** to confirm/correct\n"
+                    f"_(or reply `cancel` to abort)_"
                 )
             else:
-                prompt = (
-                    "⚠️ AI couldn't detect title.\n\n"
-                    "Reply with the **Official Romaji Title** (or `cancel`):"
+                title_prompt = (
+                    "⚠️ AI couldn't detect the title.\n\n"
+                    "Reply with the **Official Romaji Title**\n"
+                    "_(or reply `cancel` to abort)_"
                 )
 
-            title = await ask_user(chat_id, prompt, status_msg)
+            # Fresh message → always at the bottom even if new videos arrived
+            title = await ask_user_fresh(chat_id, title_prompt)
             if not title:
                 try:
-                    await status_msg.edit_text("❌ Cancelled.")
+                    await status_msg.edit_text(f"❌ Cancelled: `{filename_hint[:60]}`")
                 except Exception:
                     pass
                 return
 
-            season_str = await ask_user(
+            season_str = await ask_user_fresh(
                 chat_id,
-                f"📀 Title: **{title}**\n\nEnter **Season number**:",
-                status_msg
+                f"📀 Title: **{title}**\n\nReply with the **Season number**\n_(or `cancel`)_"
             )
             if not season_str or not season_str.isdigit():
                 try:
-                    await status_msg.edit_text("❌ Invalid season. Cancelled.")
+                    await status_msg.edit_text(f"❌ Invalid season. Cancelled: `{filename_hint[:60]}`")
                 except Exception:
                     pass
                 return
@@ -345,10 +377,13 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
             state["season"] = int(season_str)
             batch_states[chat_id] = state
 
+            # Session summary — one permanent message, visible above all future videos
             try:
-                await status_msg.edit_text(
-                    f"✅ Batch session set: **{state['title']}** — Season {state['season']}\n"
-                    f"Extracting episode number..."
+                await app.send_message(
+                    chat_id,
+                    f"✅ **Batch session ready**\n"
+                    f"📺 {state['title']} — Season {state['season']}\n\n"
+                    f"_Processing queued videos..._"
                 )
             except Exception:
                 pass
@@ -356,21 +391,29 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
         title  = state["title"]
         season = state["season"]
 
-        # ── EPISODE EXTRACTION ───────────────────────────────────────────────
-        text = message.caption or (media.file_name if media else "") or ""
-        filename_hint = (media.file_name if media else "") or "video"
+        # Show per-video status while extracting episode
+        try:
+            await status_msg.edit_text(
+                f"🔍 `{filename_hint[:60]}`\n"
+                f"**{title}** S{season:02d} — detecting episode..."
+            )
+        except Exception:
+            pass
 
+        # ── EPISODE EXTRACTION ───────────────────────────────────────────────
+        text    = message.caption or filename_hint
         episode = await extract_episode(text, title, season)
 
         if not episode:
-            episode_str = await ask_user(
+            # Ask as a fresh message so it's always visible at the bottom
+            episode_str = await ask_user_fresh(
                 chat_id,
-                f"📺 AI couldn't detect episode for:\n`{filename_hint[:80]}`\n\nEnter **Episode number**:",
-                status_msg
+                f"📺 Episode not detected for:\n`{filename_hint[:80]}`\n\n"
+                f"Reply with the **Episode number** _(or `cancel` to skip)_"
             )
             if not episode_str or not episode_str.isdigit():
                 try:
-                    await status_msg.edit_text("❌ Invalid episode. Skipped.")
+                    await status_msg.edit_text(f"⏭ Skipped: `{filename_hint[:60]}`")
                 except Exception:
                     pass
                 return
@@ -379,7 +422,7 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
         safe_title = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
         metadata = {
             "canonical_name": safe_title,
-            "season": season,
+            "season":  season,
             "episode": episode,
         }
         await queue_manager.add_task(client, message, metadata, status_msg=status_msg)
