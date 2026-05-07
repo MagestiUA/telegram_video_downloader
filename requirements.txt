@@ -2,8 +2,6 @@ pyrofork
 pydantic
 pydantic-settings
 google-genai
-# tmdbsimple removed
 python-dotenv
 aiofiles
 tenacity
-tgcrypto

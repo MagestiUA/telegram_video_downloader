@@ -4,7 +4,7 @@ import os
 from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pyrogram import Client, idle, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
 from pyrogram.errors import FloodWait
 from config.config import settings
 from analyzer.mapper import mapper
@@ -565,6 +565,14 @@ if __name__ == "__main__":
 
     async def main():
         await app.start()
+
+        await app.set_bot_commands([
+            BotCommand("start", "Welcome & your User ID"),
+            BotCommand("id", "Get your Telegram User ID"),
+            BotCommand("help", "This message"),
+            BotCommand("mode", "Switch operating mode"),
+        ])
+        logger.info("Bot commands registered")
 
         worker_task = asyncio.create_task(queue_manager.worker())
         logger.info("Queue worker started")

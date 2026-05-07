@@ -77,7 +77,7 @@ config = types.GenerateContentConfig(
     max_output_tokens=1024,
 )
 
-MODEL_NAME = "gemma-3-27b-it"
+MODEL_NAME = "gemini-2.0-flash"
 
 SYSTEM_PROMPT = """
 You are an Anime Metadata Extractor. Your task is to analyze 'dirty' filenames or telegram captions and extract clean metadata.
