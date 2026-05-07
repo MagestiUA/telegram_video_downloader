@@ -586,7 +586,6 @@ if __name__ == "__main__":
             BotCommand("mode", "Switch operating mode"),
         ])
         logger.info("Bot commands registered")
-
         worker_task = asyncio.create_task(queue_manager.worker())
         logger.info("Queue worker started")
 
