@@ -50,27 +50,32 @@ batch_locks:  dict[int, asyncio.Lock]  = {}
 
 
 # --- Initialize Client ---
+WORKERS = 120
+
 if settings.SESSION_STRING:
     app = Client(
         "tg_downloader",
         api_id=settings.API_ID,
         api_hash=settings.API_HASH,
         session_string=settings.SESSION_STRING,
-        in_memory=True
+        in_memory=True,
+        workers=WORKERS,
     )
 elif settings.BOT_TOKEN:
     app = Client(
         "sessions/tg_downloader",
         api_id=settings.API_ID,
         api_hash=settings.API_HASH,
-        bot_token=settings.BOT_TOKEN
+        bot_token=settings.BOT_TOKEN,
+        workers=WORKERS,
     )
 else:
     logger.warning("No BOT_TOKEN found. Running as Userbot!")
     app = Client(
         "sessions/tg_downloader",
         api_id=settings.API_ID,
-        api_hash=settings.API_HASH
+        api_hash=settings.API_HASH,
+        workers=WORKERS,
     )
 
 
@@ -211,14 +216,19 @@ async def mode_callback(client: Client, query: CallbackQuery):
     current = chat_modes.get(chat_id, BotMode.NORMAL)
 
     if query.data == "mode_normal":
-        if current == BotMode.BATCH:
-            await end_batch_session(chat_id)
+        if current == BotMode.NORMAL:
+            await query.answer("Already in Normal mode")
+            return
+        await end_batch_session(chat_id)
         chat_modes[chat_id] = BotMode.NORMAL
         await query.answer("Switched to Normal mode")
-        await query.message.edit_text(
-            "✅ **Normal Mode** activated.",
-            reply_markup=mode_keyboard(BotMode.NORMAL)
-        )
+        try:
+            await query.message.edit_text(
+                "✅ **Normal Mode** activated.",
+                reply_markup=mode_keyboard(BotMode.NORMAL)
+            )
+        except Exception:
+            pass
 
     elif query.data == "mode_batch":
         if current == BotMode.BATCH:
@@ -229,12 +239,15 @@ async def mode_callback(client: Client, query: CallbackQuery):
         batch_states[chat_id] = {"title": None, "season": None, "timer_task": None}
         reset_batch_timer(chat_id)
         await query.answer("Switched to Batch mode")
-        await query.message.edit_text(
-            "✅ **Batch Mode** activated.\n\n"
-            "Forward your videos — I'll ask for title & season on the first one.\n"
-            "Session expires after 30 min of inactivity.",
-            reply_markup=mode_keyboard(BotMode.BATCH)
-        )
+        try:
+            await query.message.edit_text(
+                "✅ **Batch Mode** activated.\n\n"
+                "Forward your videos — I'll ask for title & season on the first one.\n"
+                "Session expires after 30 min of inactivity.",
+                reply_markup=mode_keyboard(BotMode.BATCH)
+            )
+        except Exception:
+            pass
 
     elif query.data == "mode_end":
         await query.answer("Session ended")

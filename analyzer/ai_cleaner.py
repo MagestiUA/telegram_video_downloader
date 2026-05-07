@@ -64,7 +64,7 @@ class RateLimiter:
 
 
 # Глобальний інстанс rate limiter (10 запитів на хвилину)
-rate_limiter = RateLimiter(max_requests=10, time_window=60)
+rate_limiter = RateLimiter(max_requests=14, time_window=60)
 
 # Initialize Client
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -77,7 +77,7 @@ config = types.GenerateContentConfig(
     max_output_tokens=1024,
 )
 
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemma-4-26b-a4b-it"
 
 SYSTEM_PROMPT = """
 You are an Anime Metadata Extractor. Your task is to analyze 'dirty' filenames or telegram captions and extract clean metadata.
