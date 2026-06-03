@@ -6,3 +6,5 @@ google-genai
 python-dotenv
 aiofiles
 tenacity
+yt-dlp
+httpx

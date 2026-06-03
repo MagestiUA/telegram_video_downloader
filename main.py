@@ -11,6 +11,8 @@ from analyzer.mapper import mapper
 from analyzer.ai_cleaner import extract_metadata, extract_episode
 from core.queue_manager import queue_manager
 from urllib.parse import quote
+from dorama import db as dorama_db, checker as dorama_checker
+from dorama.sites import get_handler as get_site_handler, supported_domains
 
 # Setup logging
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -39,6 +41,9 @@ os.makedirs("sessions", exist_ok=True)
 
 # chat_id -> asyncio.Future: waiting for text reply from user
 waiting_for_user_input: dict[int, asyncio.Future] = {}
+
+# chat_id -> asyncio.Future: waiting for dorama confirm button press ("ok"|"rename"|"cancel")
+waiting_for_dorama_confirm: dict[int, asyncio.Future] = {}
 
 class BotMode(Enum):
     NORMAL = "normal"
@@ -185,7 +190,8 @@ async def help_handler(client: Client, message: Message):
         "• /start — Welcome & your User ID\n"
         "• /id — Get your Telegram User ID\n"
         "• /help — This message\n"
-        "• /mode — Switch operating mode\n\n"
+        "• /mode — Switch operating mode\n"
+        "• /dorama — Відстеження дорам / серіалів\n\n"
         "📥 **Normal Mode** _(default)_\n"
         "AI analyzes each video independently: extracts title, season & episode.\n"
         "Unknown titles → you confirm the official name → saved to DB.\n\n"
@@ -195,6 +201,9 @@ async def help_handler(client: Client, message: Message):
         "• Each video: AI extracts only the episode number (with context)\n"
         "• Isolated from DB — no reads or writes to mappings.json\n"
         "• Ends on 30 min inactivity or via 'End Session' button\n\n"
+        "🎬 **Dorama Mode**\n"
+        "Авто-завантаження нових епізодів кожні 6 годин.\n"
+        "Детальніше: `/dorama help`\n\n"
         f"**Current mode:** {mode_str}",
         reply_markup=mode_keyboard(mode)
     )
@@ -265,7 +274,7 @@ async def mode_callback(client: Client, query: CallbackQuery):
 
 
 # 3. Text input router (passes replies to ask_user futures)
-@app.on_message(auth_filter & filters.text & ~filters.command(["start", "help", "id", "mode"]))
+@app.on_message(auth_filter & filters.text & ~filters.command(["start", "help", "id", "mode", "dorama"]))
 async def text_handler(client: Client, message: Message):
     chat_id = message.chat.id
     if chat_id in waiting_for_user_input:
@@ -573,10 +582,187 @@ async def video_handler(client: Client, message: Message):
     await queue_manager.add_task(client, message, metadata, status_msg=status_msg)
 
 
+# ── DORAMA MODE ──────────────────────────────────────────────────────────────
+
+def _dorama_list_content(chat_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Build message text + keyboard for the dorama tracking list."""
+    series_list = dorama_db.get_series_by_chat(chat_id)
+    if not series_list:
+        return (
+            "📋 **Дорами / відстеження**\n\n"
+            "Немає активних серіалів.\n\n"
+            "Щоб додати:\n`/dorama https://uafix.net/serials/.../season-01-episode-01/`",
+            None
+        )
+    text = "📋 **Дорами / відстеження:**\n\n"
+    buttons = []
+    for s in series_list:
+        started = s["started_at"][:10]
+        text += (
+            f"• **{s['title']}**\n"
+            f"  S{s['last_season']:02d}E{s['last_episode']:02d} | додано {started}\n\n"
+        )
+        buttons.append([
+            InlineKeyboardButton(f"⏹ {s['title']}", callback_data=f"dorama_stop_{s['id']}")
+        ])
+    return text, InlineKeyboardMarkup(buttons)
+
+
+DORAMA_HELP = (
+    "🎬 **Доrama — автоматичне відстеження серіалів**\n\n"
+    "Бот перевіряє наявність нових епізодів кожні **6 годин** "
+    "і автоматично завантажує їх у твою колекцію.\n\n"
+    "**Як додати серіал:**\n"
+    "Скопіюй посилання з uafix.net — підходить і сторінка серіалу, "
+    "і сторінка першого епізоду:\n"
+    "`/dorama https://uafix.net/serials/назва/`\n"
+    "`/dorama https://uafix.net/serials/назва/season-01-episode-01/`\n\n"
+    "**Підтримувані сайти:** `uafix.net`\n\n"
+    "**Про завантаження:**\n"
+    "• Завантажується тільки **дубляж / багатоголосий** (zetvideo.net)\n"
+    "• Якщо доступні лише субтитри — бот чекає появи дубляжу\n"
+    "• Завантажуються всі доступні серії й сезони\n"
+    "• Серіал відстежується до **6 місяців** від дати додавання\n"
+    "• При успішному завантаженні — сповіщення отримують усі користувачі бота\n\n"
+    "**Команди:**\n"
+    "• `/dorama {url}` — додати серіал\n"
+    "• `/dorama list` — список активних серіалів з кнопками зупинки\n"
+    "• `/dorama help` — ця довідка"
+)
+
+
+@app.on_message(auth_filter & filters.command("dorama"))
+async def dorama_command(client: Client, message: Message):
+    parts = message.text.strip().split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    # /dorama help
+    if arg == "help":
+        await message.reply_text(DORAMA_HELP)
+        return
+
+    # /dorama  or  /dorama list  → show list
+    if not arg or arg == "list":
+        text, kb = _dorama_list_content(message.chat.id)
+        await message.reply_text(text, reply_markup=kb)
+        return
+
+    url = arg
+    handler = get_site_handler(url)
+    if not handler:
+        domains = ", ".join(supported_domains())
+        await message.reply_text(
+            f"❌ Сайт не підтримується.\nЗараз доступно: `{domains}`"
+        )
+        return
+
+    # Validate URL
+    if not handler.is_valid_url(url):
+        await message.reply_text(
+            "❌ Не вдалося розпізнати URL.\n"
+            "Підтримуються посилання на серіал або на перший епізод uafix.net."
+        )
+        return
+
+    status = await message.reply_text("⏳ Отримую інформацію про серіал...")
+
+    # Fetch title from the page
+    auto_title = await handler.get_series_title(url)
+    chat_id = message.chat.id
+
+    if auto_title:
+        # Show confirm / rename / cancel buttons
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        waiting_for_dorama_confirm[chat_id] = future
+        try:
+            await status.edit_text(
+                f"📺 Знайдено серіал:\n**{auto_title}**",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Підтвердити",  callback_data="dorama_confirm_ok"),
+                    InlineKeyboardButton("✏️ Ввести назву", callback_data="dorama_confirm_rename"),
+                    InlineKeyboardButton("❌ Відмінити",    callback_data="dorama_confirm_cancel"),
+                ]])
+            )
+            choice = await asyncio.wait_for(future, timeout=120)
+        except asyncio.TimeoutError:
+            choice = "cancel"
+        finally:
+            waiting_for_dorama_confirm.pop(chat_id, None)
+    else:
+        choice = "rename"
+
+    if choice == "cancel":
+        try: await status.edit_text("❌ Скасовано.")
+        except Exception: pass
+        return
+
+    if choice == "ok":
+        title = auto_title
+    else:  # rename
+        title = await ask_user_fresh(chat_id, "✏️ Введіть назву серіалу _(або `cancel`)_:")
+        if not title:
+            try: await status.edit_text("❌ Скасовано.")
+            except Exception: pass
+            return
+
+    # Save to DB
+    series_id = dorama_db.add_series(message.chat.id, title, url)
+    series_row = dorama_db.get_series_by_id(series_id)
+
+    try:
+        await status.edit_text(
+            f"✅ Додано до відстеження: **{title}**\n"
+            f"⏳ Перевіряю доступні епізоди..."
+        )
+    except Exception:
+        pass
+
+    # Trigger immediate download of available episodes
+    asyncio.create_task(dorama_checker.process_series(series_row, client))
+
+
+@app.on_callback_query(auth_filter & filters.regex("^dorama_confirm_"))
+async def dorama_confirm_callback(client: Client, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    action = query.data.replace("dorama_confirm_", "")  # "ok" | "rename" | "cancel"
+
+    future = waiting_for_dorama_confirm.get(chat_id)
+    if future and not future.done():
+        future.set_result(action)
+
+    await query.answer()
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^dorama_stop_"))
+async def dorama_stop_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    series = dorama_db.get_series_by_id(series_id)
+    title = series["title"] if series else f"#{series_id}"
+
+    dorama_db.stop_series(series_id)
+    await query.answer(f"⏹ Зупинено: {title}")
+
+    # Refresh the list in-place
+    text, kb = _dorama_list_content(query.message.chat.id)
+    try:
+        await query.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     logger.info("Bot starting...")
 
     async def main():
+        dorama_db.init_db()
+
         await app.start()
 
         await app.set_bot_commands([
@@ -584,14 +770,19 @@ if __name__ == "__main__":
             BotCommand("id", "Get your Telegram User ID"),
             BotCommand("help", "This message"),
             BotCommand("mode", "Switch operating mode"),
+            BotCommand("dorama", "Відстеження дорам / серіалів"),
         ])
         logger.info("Bot commands registered")
-        worker_task = asyncio.create_task(queue_manager.worker())
+
+        worker_task  = asyncio.create_task(queue_manager.worker())
+        checker_task = asyncio.create_task(dorama_checker.run_checker(app))
         logger.info("Queue worker started")
+        logger.info("Dorama checker started")
 
         await idle()
 
         worker_task.cancel()
+        checker_task.cancel()
         await app.stop()
 
     app.run(main())

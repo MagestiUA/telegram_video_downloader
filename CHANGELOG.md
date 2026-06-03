@@ -4,6 +4,38 @@ All notable changes are documented here.
 
 ---
 
+## [2026-06-03] - Dorama Mode, Gemini Model Migration & Fixes
+
+### Added
+- **🎬 Dorama Mode** — automatic tracking and downloading of series episodes from streaming sites
+  - `/dorama {url}` — add a series to track (accepts both a series page and a first-episode URL)
+  - `/dorama list` — list tracked series with inline **⏹ Stop** buttons
+  - `/dorama help` — full mode documentation
+  - Background checker runs immediately on add, then every **6 hours**
+  - Series auto-expire after **~6 months** (182 days) of tracking
+  - Downloads **all available episodes & seasons**; skips already-downloaded ones (tracked in SQLite)
+  - **Dub-only policy** — downloads only Ukrainian dub / multi-voice-over (zetvideo.net); subtitle-only tracks are ignored until a dub appears
+  - On success, **all authorized users** are notified (not just the one who added the series)
+  - Confirm / rename / cancel inline buttons when adding a series
+- **Pluggable site-handler architecture** (`dorama/sites/`) — `BaseSiteHandler` interface + registry keyed by domain; add a new site by dropping in one file and registering it
+  - `uafix.net` handler supports **two URL formats**: per-episode pages (`.../season-01-episode-01/`) and whole-serial players (`.../serials/slug/` with embedded episode JSON)
+- **SQLite persistence** (`sessions/dorama.db`) — `series` + `episodes` tables
+- **`yt-dlp` + `ffmpeg`** for HLS (m3u8) downloads; **`httpx`** for page fetching
+- **`DORAMA_PATH`** env var + `/data/dorama` volume (separate folder for series)
+- **`tgcrypto`** added to dependencies — fixes slow download speeds (was missing, Pyrogram fell back to pure-Python crypto)
+- Explicit **`workers=120`** on the Pyrogram client — prevents handler-task starvation when many videos arrive at once on low-core hosts (e.g. Raspberry Pi)
+
+### Changed
+- **Gemini model migration** — Google removed `gemma-3-27b-it` from the API; switched to `gemma-4-26b-a4b-it` (unlimited TPM, 1.5K req/day free tier)
+- Rate limiter raised from 10 → 14 req/min to match the new model's limits
+- `debug_models.py` updated to the new `google-genai` SDK for listing available models
+- `mappings.json` is now persistent — added `/app` bind mount so it survives container rebuilds
+
+### Fixed
+- **`MESSAGE_NOT_MODIFIED` crash** in mode switching — added "already in this mode" guard for Normal mode and wrapped `edit_text` calls in try/except
+
+---
+
 ## [2026-03-19] - CasaOS Support, UX Improvements & Batch Mode
 
 ### Added

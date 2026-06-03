@@ -5,6 +5,7 @@ WORKDIR /app
 # Install system dependencies (e.g. ffmpeg if needed later, but for now just python basics)
 RUN apt-get update && apt-get install -y \
     gcc \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

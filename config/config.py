@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     
     # Download Path
     DOWNLOAD_PATH: str = "/data/downloads"
+    DORAMA_PATH:   str = "/data/dorama"
     
     
     # API Keys

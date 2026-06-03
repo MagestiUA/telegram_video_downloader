@@ -2,16 +2,18 @@
 
 > 🇺🇦 [Українська версія](README.uk.md)
 
-A Telegram userbot/bot that automatically downloads videos from channels and chats, uses Google Gemini AI to extract anime metadata, and organizes files into a clean folder structure.
+A Telegram userbot/bot that automatically downloads videos from channels and chats, uses Google Gemini AI to extract anime metadata, and organizes files into a clean folder structure. It can also track web series on streaming sites and auto-download new episodes as they appear.
 
 ## Features
 
 - **AI-powered metadata extraction** — Google Gemini analyzes messy filenames and captions to identify anime title, season, and episode number
-- **Two operating modes** — Normal (per-video AI analysis) and Batch (set title+season once, extract episodes in bulk)
+- **Three operating modes** — Normal (per-video AI analysis), Batch (set title+season once, extract episodes in bulk), and Dorama (track streaming-site series and auto-download new episodes)
+- **🎬 Dorama tracking** — give a series link, the bot checks for new episodes every 6 hours and downloads the Ukrainian dub automatically
+- **Pluggable site handlers** — add support for a new streaming site by dropping in one file
 - **Download queue** — sequential processing to avoid overloading the connection
 - **Auto file organization** — creates per-show folders and renames files to `Show Title - S01E05.mp4`
 - **Title mapper** — remembers user-confirmed title corrections in `mappings.json` for future use _(Normal mode only)_
-- **Rate limiting** — token-bucket limiter keeps Gemini API calls under 10 req/min
+- **Rate limiting** — token-bucket limiter keeps Gemini API calls under the model's free-tier limit
 - **Rotating log** — `app.log` with 10 MB cap and 5 backup files, mirrored to stdout for `docker logs`
 - **Docker-ready** — single `docker-compose up -d` to run on a Linux server
 - **CasaOS-compatible** — install and configure directly from the CasaOS UI without editing any files
@@ -33,6 +35,18 @@ Best for series where AI keeps misidentifying every episode as S01E01.
 - Completely isolated from `mappings.json` — no reads or writes
 - Session ends after **30 min of inactivity** or via the **⏹ End Session** button
 
+### 🎬 Dorama Mode
+Tracks a series on a streaming site and automatically downloads new episodes as they're released.
+- Add via `/dorama {url}` — accepts either a series page (`.../serials/slug/`) or a first-episode URL (`.../serials/slug/season-01-episode-01/`)
+- Bot fetches the title, you confirm / rename / cancel with inline buttons
+- A background checker runs immediately, then **every 6 hours**
+- Downloads **only the Ukrainian dub / multi-voice-over**; subtitle-only releases are skipped until a dub appears
+- Downloads **all available episodes and seasons**, skipping ones already saved
+- On a successful download, **all authorized users** get a notification
+- Series are tracked for up to **~6 months**, then auto-deactivated
+- `/dorama list` shows tracked series with **⏹ Stop** buttons; `/dorama help` shows full docs
+- **Supported sites:** `uafix.net`
+
 ## Architecture
 
 ```
@@ -47,10 +61,20 @@ tg_video_downloader/
 ├── analyzer/
 │   ├── ai_cleaner.py      # Gemini API: full metadata + episode-only extraction
 │   └── mapper.py          # Persistent title mapping (JSON)
-├── sessions/              # Pyrogram session files (git-ignored)
+├── dorama/                 # Dorama Mode: series tracking
+│   ├── db.py              # SQLite: series + episodes tables
+│   ├── checker.py         # Background checker (every 6h) + download orchestration
+│   └── sites/             # Pluggable site handlers
+│       ├── base.py        # BaseSiteHandler interface
+│       ├── __init__.py    # Domain → handler registry
+│       └── uafix.py       # uafix.net handler (zetvideo.net / ashdi.vip players)
+├── sessions/              # Pyrogram sessions + dorama.db (git-ignored)
 ├── .env                   # Secrets for local dev (git-ignored)
 └── .env.template          # Example env file
 ```
+
+### Adding a new streaming site
+Create `dorama/sites/yoursite.py` with a subclass of `BaseSiteHandler` (implement `is_valid_url`, `get_series_title`, `list_episodes`, `download`), then register it in `dorama/sites/__init__.py`. No other code changes needed.
 
 ## Requirements
 
@@ -71,8 +95,9 @@ All settings are read from **environment variables**. Priority order:
 | `API_HASH` | ✅ | Telegram API Hash from my.telegram.org |
 | `BOT_TOKEN` | ✅ | Bot token from @BotFather |
 | `GEMINI_API_KEY` | ✅ | Google Gemini API key |
-| `DOWNLOAD_PATH` | — | Download folder inside container (default: `/data/downloads`) |
-| `ALLOWED_USERS` | — | Comma-separated Telegram user IDs allowed to use the bot |
+| `DOWNLOAD_PATH` | — | Anime download folder inside container (default: `/data/downloads`) |
+| `DORAMA_PATH` | — | Dorama / series download folder inside container (default: `/data/dorama`) |
+| `ALLOWED_USERS` | — | Comma-separated Telegram user IDs allowed to use the bot (also recipients of Dorama notifications) |
 | `SESSION_STRING` | — | Pyrogram session string — required for Docker (avoids interactive login) |
 
 `ALLOWED_USERS`: send `/id` to the bot to find your Telegram user ID.
@@ -130,6 +155,9 @@ python main.py
 | `/id` | Get your Telegram User ID |
 | `/help` | Show help and mode descriptions |
 | `/mode` | Switch between Normal and Batch mode |
+| `/dorama {url}` | Track a series and auto-download new episodes |
+| `/dorama list` | List tracked series with stop buttons |
+| `/dorama help` | Dorama Mode documentation |
 
 ## File Naming
 
@@ -146,6 +174,9 @@ python main.py
 | [google-genai](https://pypi.org/project/google-genai/) | Google Gemini AI SDK |
 | [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) | Environment-based configuration |
 | [tgcrypto](https://github.com/pyrogram/tgcrypto) | Fast Telegram encryption |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | HLS (m3u8) downloads for Dorama Mode |
+| [httpx](https://www.python-httpx.org/) | Async HTTP client for fetching streaming pages |
+| SQLite | Dorama series & episode tracking |
 
 ## License
 
