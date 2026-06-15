@@ -70,11 +70,15 @@ rate_limiter = RateLimiter(max_requests=14, time_window=60)
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 # Config using types
+# NOTE: gemma-4-26b-a4b-it is a reasoning model — it spends output tokens on
+# internal "thinking" before producing the answer. The budget must cover BOTH
+# the thoughts and the final JSON, otherwise it hits MAX_TOKENS mid-thought and
+# response.text comes back None. thinking_budget=0 is not supported by this model.
 config = types.GenerateContentConfig(
     temperature=0.1,
     top_p=0.95,
     top_k=40,
-    max_output_tokens=1024,
+    max_output_tokens=8192,
 )
 
 MODEL_NAME = "gemma-4-26b-a4b-it"
@@ -130,6 +134,30 @@ If no episode number found, return {"episode": null}.
 No markdown, no extra text.
 """
 
+def _extract_text(response) -> str | None:
+    """
+    Safely pull text out of a Gemini response.
+    Returns None (and logs why) when the model produced no usable text —
+    e.g. empty candidates, a non-STOP finish reason, or a safety block.
+    """
+    text = getattr(response, "text", None)
+    if text:
+        return text
+
+    # Diagnose the empty response so it's clear in the logs why it happened.
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            feedback = getattr(response, "prompt_feedback", None)
+            logger.warning(f"Empty response (no candidates). prompt_feedback={feedback}")
+        else:
+            reason = getattr(candidates[0], "finish_reason", None)
+            logger.warning(f"Empty response. finish_reason={reason}")
+    except Exception as diag_err:
+        logger.debug(f"Could not diagnose empty response: {diag_err}")
+    return None
+
+
 async def extract_episode(text: str, title: str, season: int) -> int | None:
     """
     Extracts only the episode number given known title and season.
@@ -144,7 +172,10 @@ async def extract_episode(text: str, title: str, season: int) -> int | None:
         response = await client.aio.models.generate_content(
             model=MODEL_NAME, contents=contents, config=config
         )
-        clean = response.text.strip()
+        raw = _extract_text(response)
+        if not raw:
+            return None
+        clean = raw.strip()
         if clean.startswith("```json"):
             clean = clean[7:]
         if clean.startswith("```"):
@@ -174,9 +205,11 @@ async def extract_metadata(text: str) -> dict | None:
             config=config
         )
         
-        response_text = response.text
+        response_text = _extract_text(response)
         logger.info(f"Gemini raw response: {response_text}")
-        
+        if not response_text:
+            return None
+
         # Clean up markdown code blocks if present
         clean_text = response_text.strip()
         if clean_text.startswith("```json"):

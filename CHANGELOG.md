@@ -4,6 +4,27 @@ All notable changes are documented here.
 
 ---
 
+## [2026-06-15] - Fix empty Gemini responses (reasoning model)
+
+### Fixed
+- `gemma-4-26b-a4b-it` is a reasoning model — it spent the entire
+  `max_output_tokens` budget on internal "thinking" and hit MAX_TOKENS before
+  emitting the JSON answer, so `response.text` came back None and metadata /
+  episode extraction crashed (`'NoneType' object has no attribute 'strip'`).
+  Raised `max_output_tokens` 1024 → 8192 so thinking + answer both fit.
+  (`thinking_budget=0` is rejected by this model.)
+- Hardened `extract_metadata` / `extract_episode` with `_extract_text()` —
+  returns None gracefully and logs `finish_reason` / `prompt_feedback` when the
+  model produces no text, so the manual-entry fallback kicks in cleanly.
+
+### Added
+- Committed the `dorama/` package, which was referenced by `main.py` in the
+  previous release but accidentally omitted from version control.
+- `.dockerignore` now tracked — prevents `.env`, sessions, venv and logs from
+  being baked into the Docker image.
+
+---
+
 ## [2026-06-03] - Dorama Mode, Gemini Model Migration & Fixes
 
 ### Added

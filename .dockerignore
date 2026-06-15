@@ -1,0 +1,12 @@
+.env
+.venv
+sessions/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.claude/
+app.log
+*.log
+mappings.json
