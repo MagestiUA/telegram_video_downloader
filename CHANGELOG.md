@@ -11,9 +11,11 @@ All notable changes are documented here.
   uses `deepseek-v4-flash` via the OpenAI-compatible API (`https://api.deepseek.com`)
 - `analyzer/ai_cleaner.py` rewritten to use the `openai` SDK's `AsyncOpenAI` client
   with **JSON output mode** (`response_format={"type": "json_object"}`)
-- Added a `_chat_json()` helper that **retries on empty/malformed responses** —
-  `deepseek-v4-flash` occasionally returns truncated JSON or empty content, so up to
-  3 attempts are made before falling back to manual entry
+- `deepseek-v4-flash` is a reasoning model — **no `max_tokens` cap is sent**, because
+  capping truncates the chain-of-thought and yields empty/invalid content. Processing
+  is remote, so output length is left uncapped.
+- Added a `_chat_json()` helper that retries (up to 3×) on the rare empty/malformed
+  response before falling back to manual entry
 - `config.py`: `DEEPSEEK_API_KEY` is now required; `GEMINI_API_KEY` kept optional (unused)
 - `docker-compose.yml`, `.env.template`: replaced `GEMINI_API_KEY` with `DEEPSEEK_API_KEY`
   (plus CasaOS field description)

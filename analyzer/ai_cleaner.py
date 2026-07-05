@@ -71,7 +71,10 @@ client = AsyncOpenAI(
     base_url="https://api.deepseek.com",
 )
 
-# deepseek-v4-flash — fast, non-reasoning, supports JSON output mode.
+# deepseek-v4-flash is a REASONING model — it emits chain-of-thought before the
+# answer. We deliberately DON'T pass max_tokens: capping the output truncates the
+# reasoning and yields empty/invalid content. Processing is remote, so there's no
+# reason to limit it — let the model run to completion.
 MODEL_NAME = "deepseek-v4-flash"
 TEMPERATURE = 0.1
 
@@ -126,11 +129,12 @@ If no episode number found, return {"episode": null}.
 No markdown, no extra text.
 """
 
-async def _chat_json(messages: list[dict], max_tokens: int, retries: int = 2) -> dict | None:
+async def _chat_json(messages: list[dict], retries: int = 2) -> dict | None:
     """
     Call DeepSeek in JSON mode and return the parsed object.
-    deepseek-v4-flash occasionally emits truncated/invalid JSON, so we retry a
-    couple of times on empty or unparseable responses before giving up.
+    No max_tokens cap — deepseek-v4-flash is a reasoning model, and capping the
+    output truncates it mid-thought (empty/invalid content). We let it run to
+    completion and just retry on the rare empty/unparseable response.
     """
     for attempt in range(retries + 1):
         await rate_limiter.acquire()
@@ -139,12 +143,14 @@ async def _chat_json(messages: list[dict], max_tokens: int, retries: int = 2) ->
             messages=messages,
             response_format={"type": "json_object"},
             temperature=TEMPERATURE,
-            max_tokens=max_tokens,
         )
         raw = response.choices[0].message.content
         logger.info(f"DeepSeek raw response: {raw}")
         if not raw:
-            logger.warning(f"Empty response (attempt {attempt + 1}/{retries + 1}).")
+            finish = response.choices[0].finish_reason
+            logger.warning(
+                f"Empty response (attempt {attempt + 1}/{retries + 1}, finish_reason={finish})."
+            )
             continue
         try:
             return json.loads(raw)
@@ -166,7 +172,6 @@ async def extract_episode(text: str, title: str, season: int) -> int | None:
                 {"role": "system", "content": EPISODE_SYSTEM_PROMPT},
                 {"role": "user", "content": f"Anime: {title}\nSeason: {season}\nText: {text}"},
             ],
-            max_tokens=200,
         )
         if not data:
             return None
@@ -187,7 +192,6 @@ async def extract_metadata(text: str) -> dict | None:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Analyze this text and extract metadata: {text}"},
             ],
-            max_tokens=500,
         )
         if not data:
             return None
