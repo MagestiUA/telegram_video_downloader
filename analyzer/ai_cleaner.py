@@ -100,8 +100,15 @@ RULES:
    - Leading zeros (e.g. "01", "03") should be converted to integers (1, 3).
 
 4. SEASON NUMBER RULES:
-   - Only treat a number as a season if it is explicitly indicated by words like:
+   - Treat a number as a season if it is explicitly indicated by words like:
      "season", "сезон", "s", "season 2", "2 сезон".
+   - ALSO: if the extracted TITLE itself ends with a standalone number from 2 to 9
+     (preceded by a space), interpret that number as the SEASON and REMOVE it from
+     the title.
+     Example: "Режим Пекло ... зі сміттєвим балансом 2"
+       -> title = "Режим Пекло ... зі сміттєвим балансом", season = 2.
+   - This trailing-number rule applies ONLY to a single digit 2-9. Do NOT apply it to
+     multi-digit numbers (e.g. "100", "86") or to "0" — those stay part of the title.
    - If season is not explicitly specified, default season to 1 (int), not null.
 
 5. OUTPUT FORMAT:

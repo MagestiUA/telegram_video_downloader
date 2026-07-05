@@ -4,6 +4,17 @@ All notable changes are documented here.
 
 ---
 
+## [2026-07-05] - Detect trailing season number in title
+
+### Changed
+- Metadata prompt now treats a standalone trailing digit **2–9** at the end of a
+  title as the **season** and strips it from the title
+  (e.g. `"... балансом 2"` → title `"... балансом"`, season `2`). Multi-digit
+  numbers (`100`, `86`) and `0` are left untouched to avoid breaking titles that
+  legitimately end in a number.
+
+---
+
 ## [2026-06-16] - Switch from Google Gemini to DeepSeek
 
 ### Changed
