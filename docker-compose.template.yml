@@ -12,7 +12,7 @@ services:
       - API_ID=
       - API_HASH=
       - BOT_TOKEN=
-      - GEMINI_API_KEY=
+      - DEEPSEEK_API_KEY=
       - DOWNLOAD_PATH=/data/downloads
       - ALLOWED_USERS=
       - SESSION_STRING=
@@ -30,9 +30,9 @@ services:
         - container: BOT_TOKEN
           description:
             en_us: "Bot token from @BotFather"
-        - container: GEMINI_API_KEY
+        - container: DEEPSEEK_API_KEY
           description:
-            en_us: "Google Gemini API key (from aistudio.google.com)"
+            en_us: "DeepSeek API key (from platform.deepseek.com)"
         - container: ALLOWED_USERS
           description:
             en_us: "Allowed Telegram User IDs, comma-separated (send /id to the bot to find yours)"

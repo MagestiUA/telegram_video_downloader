@@ -4,6 +4,26 @@ All notable changes are documented here.
 
 ---
 
+## [2026-06-16] - Switch from Google Gemini to DeepSeek
+
+### Changed
+- **AI provider swapped from Google Gemini to DeepSeek** — metadata extraction now
+  uses `deepseek-v4-flash` via the OpenAI-compatible API (`https://api.deepseek.com`)
+- `analyzer/ai_cleaner.py` rewritten to use the `openai` SDK's `AsyncOpenAI` client
+  with **JSON output mode** (`response_format={"type": "json_object"}`)
+- Added a `_chat_json()` helper that **retries on empty/malformed responses** —
+  `deepseek-v4-flash` occasionally returns truncated JSON or empty content, so up to
+  3 attempts are made before falling back to manual entry
+- `config.py`: `DEEPSEEK_API_KEY` is now required; `GEMINI_API_KEY` kept optional (unused)
+- `docker-compose.yml`, `.env.template`: replaced `GEMINI_API_KEY` with `DEEPSEEK_API_KEY`
+  (plus CasaOS field description)
+
+### Removed
+- `google-genai` dependency (replaced with `openai`)
+- `debug_models.py` — Gemini-specific model-listing helper, no longer relevant
+
+---
+
 ## [2026-06-15] - Fix empty Gemini responses (reasoning model)
 
 ### Fixed

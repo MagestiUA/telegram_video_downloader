@@ -2,7 +2,7 @@ pyrofork
 tgcrypto
 pydantic
 pydantic-settings
-google-genai
+openai
 python-dotenv
 aiofiles
 tenacity

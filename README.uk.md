@@ -2,18 +2,18 @@
 
 > 🇬🇧 [English version](README.md)
 
-Telegram userbot/бот для автоматичного завантаження відео з каналів та чатів. Використовує Google Gemini AI для розпізнавання метаданих аніме та організовує файли в зручну структуру папок. Також може відстежувати серіали на стрімінгових сайтах і автоматично завантажувати нові епізоди.
+Telegram userbot/бот для автоматичного завантаження відео з каналів та чатів. Використовує DeepSeek AI для розпізнавання метаданих аніме та організовує файли в зручну структуру папок. Також може відстежувати серіали на стрімінгових сайтах і автоматично завантажувати нові епізоди.
 
 ## Можливості
 
-- **AI-аналіз метаданих** — Google Gemini аналізує захаращені назви файлів і підписи для визначення назви аніме, сезону та номера серії
+- **AI-аналіз метаданих** — DeepSeek аналізує захаращені назви файлів і підписи для визначення назви аніме, сезону та номера серії
 - **Три режими роботи** — Звичайний (аналіз кожного відео окремо), Пакетний (назва+сезон задаються один раз) та Дорами (відстеження серіалів зі стрімінгових сайтів з авто-завантаженням нових епізодів)
 - **🎬 Відстеження дорам** — даєш посилання на серіал, бот кожні 6 годин перевіряє нові епізоди й автоматично завантажує український дубляж
 - **Підключувані обробники сайтів** — підтримку нового сайту додає один файл
 - **Черга завантажень** — послідовна обробка для уникнення перевантаження
 - **Автоматична організація файлів** — створює папки для кожного тайтлу та перейменовує файли за шаблоном `Назва - S01E05.mp4`
 - **Mapper назв** — запам'ятовує підтверджені користувачем відповідності у `mappings.json` _(лише в Звичайному режимі)_
-- **Rate limiting** — алгоритм Token Bucket обмежує запити до Gemini API згідно free-tier ліміту моделі
+- **Rate limiting** — алгоритм Token Bucket обмежує запити до DeepSeek API (14 запитів/хв)
 - **Ротація логів** — `app.log`, макс. 10 МБ, 5 резервних копій, дублюється в stdout для `docker logs`
 - **Docker-ready** — запуск одною командою `docker-compose up -d`
 - **Сумісність з CasaOS** — встановлення та налаштування прямо з інтерфейсу CasaOS без редагування файлів
@@ -59,7 +59,7 @@ tg_video_downloader/
 │   ├── queue_manager.py   # Асинхронна черга завантажень
 │   └── renamer.py         # Генерація імен файлів і шляхів
 ├── analyzer/
-│   ├── ai_cleaner.py      # Gemini API: повна екстракція + екстракція лише серії
+│   ├── ai_cleaner.py      # DeepSeek API: повна екстракція + екстракція лише серії
 │   └── mapper.py          # Збереження відповідностей назв (JSON)
 ├── dorama/                 # Режим Дорам: відстеження серіалів
 │   ├── db.py              # SQLite: таблиці series + episodes
@@ -81,7 +81,7 @@ tg_video_downloader/
 - Python 3.11+
 - Telegram API credentials з [my.telegram.org](https://my.telegram.org)
 - Bot token від [@BotFather](https://t.me/BotFather)
-- Google Gemini API key з [Google AI Studio](https://aistudio.google.com/app/apikey)
+- DeepSeek API key з [platform.deepseek.com](https://platform.deepseek.com/api_keys)
 
 ## Конфігурація
 
@@ -94,7 +94,7 @@ tg_video_downloader/
 | `API_ID` | ✅ | Telegram API ID з my.telegram.org |
 | `API_HASH` | ✅ | Telegram API Hash з my.telegram.org |
 | `BOT_TOKEN` | ✅ | Токен бота від @BotFather |
-| `GEMINI_API_KEY` | ✅ | Google Gemini API key |
+| `DEEPSEEK_API_KEY` | ✅ | DeepSeek API key |
 | `DOWNLOAD_PATH` | — | Папка завантажень аніме всередині контейнера (за замовч.: `/data/downloads`) |
 | `DORAMA_PATH` | — | Папка завантажень дорам / серіалів всередині контейнера (за замовч.: `/data/dorama`) |
 | `ALLOWED_USERS` | — | Telegram user ID через кому — кому дозволено користуватись ботом (також отримують сповіщення про дорами) |
@@ -171,7 +171,7 @@ python main.py
 | Бібліотека | Призначення |
 |------------|-------------|
 | [Pyrofork](https://github.com/pyrofork/pyrofork) | Telegram MTProto клієнт (форк Pyrogram) |
-| [google-genai](https://pypi.org/project/google-genai/) | Google Gemini AI SDK |
+| [openai](https://pypi.org/project/openai/) | Клієнт DeepSeek (OpenAI-сумісний API) |
 | [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) | Конфігурація через змінні середовища |
 | [tgcrypto](https://github.com/pyrogram/tgcrypto) | Швидке шифрування Telegram |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | Завантаження HLS (m3u8) для режиму Дорам |

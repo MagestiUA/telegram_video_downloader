@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     
     
     # API Keys
-    GEMINI_API_KEY: str
-    # TMDB_API_KEY removed
+    DEEPSEEK_API_KEY: str
+    GEMINI_API_KEY: str | None = None  # legacy, no longer used
 
     # Session String (for Docker)
     SESSION_STRING: str | None = None

@@ -2,18 +2,18 @@
 
 > 🇺🇦 [Українська версія](README.uk.md)
 
-A Telegram userbot/bot that automatically downloads videos from channels and chats, uses Google Gemini AI to extract anime metadata, and organizes files into a clean folder structure. It can also track web series on streaming sites and auto-download new episodes as they appear.
+A Telegram userbot/bot that automatically downloads videos from channels and chats, uses DeepSeek AI to extract anime metadata, and organizes files into a clean folder structure. It can also track web series on streaming sites and auto-download new episodes as they appear.
 
 ## Features
 
-- **AI-powered metadata extraction** — Google Gemini analyzes messy filenames and captions to identify anime title, season, and episode number
+- **AI-powered metadata extraction** — DeepSeek analyzes messy filenames and captions to identify anime title, season, and episode number
 - **Three operating modes** — Normal (per-video AI analysis), Batch (set title+season once, extract episodes in bulk), and Dorama (track streaming-site series and auto-download new episodes)
 - **🎬 Dorama tracking** — give a series link, the bot checks for new episodes every 6 hours and downloads the Ukrainian dub automatically
 - **Pluggable site handlers** — add support for a new streaming site by dropping in one file
 - **Download queue** — sequential processing to avoid overloading the connection
 - **Auto file organization** — creates per-show folders and renames files to `Show Title - S01E05.mp4`
 - **Title mapper** — remembers user-confirmed title corrections in `mappings.json` for future use _(Normal mode only)_
-- **Rate limiting** — token-bucket limiter keeps Gemini API calls under the model's free-tier limit
+- **Rate limiting** — token-bucket limiter throttles DeepSeek API calls (14 req/min)
 - **Rotating log** — `app.log` with 10 MB cap and 5 backup files, mirrored to stdout for `docker logs`
 - **Docker-ready** — single `docker-compose up -d` to run on a Linux server
 - **CasaOS-compatible** — install and configure directly from the CasaOS UI without editing any files
@@ -59,7 +59,7 @@ tg_video_downloader/
 │   ├── queue_manager.py   # Async download queue (sequential worker)
 │   └── renamer.py         # Filename / folder path generation
 ├── analyzer/
-│   ├── ai_cleaner.py      # Gemini API: full metadata + episode-only extraction
+│   ├── ai_cleaner.py      # DeepSeek API: full metadata + episode-only extraction
 │   └── mapper.py          # Persistent title mapping (JSON)
 ├── dorama/                 # Dorama Mode: series tracking
 │   ├── db.py              # SQLite: series + episodes tables
@@ -81,7 +81,7 @@ Create `dorama/sites/yoursite.py` with a subclass of `BaseSiteHandler` (implemen
 - Python 3.11+
 - Telegram API credentials from [my.telegram.org](https://my.telegram.org)
 - Bot token from [@BotFather](https://t.me/BotFather)
-- Google Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- DeepSeek API key from [platform.deepseek.com](https://platform.deepseek.com/api_keys)
 
 ## Configuration
 
@@ -94,7 +94,7 @@ All settings are read from **environment variables**. Priority order:
 | `API_ID` | ✅ | Telegram API ID from my.telegram.org |
 | `API_HASH` | ✅ | Telegram API Hash from my.telegram.org |
 | `BOT_TOKEN` | ✅ | Bot token from @BotFather |
-| `GEMINI_API_KEY` | ✅ | Google Gemini API key |
+| `DEEPSEEK_API_KEY` | ✅ | DeepSeek API key |
 | `DOWNLOAD_PATH` | — | Anime download folder inside container (default: `/data/downloads`) |
 | `DORAMA_PATH` | — | Dorama / series download folder inside container (default: `/data/dorama`) |
 | `ALLOWED_USERS` | — | Comma-separated Telegram user IDs allowed to use the bot (also recipients of Dorama notifications) |
@@ -171,7 +171,7 @@ python main.py
 | Library | Purpose |
 |---------|---------|
 | [Pyrofork](https://github.com/pyrofork/pyrofork) | Telegram MTProto client (Pyrogram fork) |
-| [google-genai](https://pypi.org/project/google-genai/) | Google Gemini AI SDK |
+| [openai](https://pypi.org/project/openai/) | DeepSeek client (OpenAI-compatible API) |
 | [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) | Environment-based configuration |
 | [tgcrypto](https://github.com/pyrogram/tgcrypto) | Fast Telegram encryption |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | HLS (m3u8) downloads for Dorama Mode |

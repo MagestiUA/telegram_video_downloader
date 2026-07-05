@@ -1,5 +1,4 @@
-from google import genai
-from google.genai import types
+from openai import AsyncOpenAI
 from config.config import settings
 import json
 import logging
@@ -63,25 +62,18 @@ class RateLimiter:
             logger.debug(f"API запит дозволено. Поточна кількість: {len(self.requests)}/{self.max_requests}")
 
 
-# Глобальний інстанс rate limiter (10 запитів на хвилину)
+# Глобальний інстанс rate limiter (14 запитів на хвилину)
 rate_limiter = RateLimiter(max_requests=14, time_window=60)
 
-# Initialize Client
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
-# Config using types
-# NOTE: gemma-4-26b-a4b-it is a reasoning model — it spends output tokens on
-# internal "thinking" before producing the answer. The budget must cover BOTH
-# the thoughts and the final JSON, otherwise it hits MAX_TOKENS mid-thought and
-# response.text comes back None. thinking_budget=0 is not supported by this model.
-config = types.GenerateContentConfig(
-    temperature=0.1,
-    top_p=0.95,
-    top_k=40,
-    max_output_tokens=8192,
+# DeepSeek exposes an OpenAI-compatible API.
+client = AsyncOpenAI(
+    api_key=settings.DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com",
 )
 
-MODEL_NAME = "gemma-4-26b-a4b-it"
+# deepseek-v4-flash — fast, non-reasoning, supports JSON output mode.
+MODEL_NAME = "deepseek-v4-flash"
+TEMPERATURE = 0.1
 
 SYSTEM_PROMPT = """
 You are an Anime Metadata Extractor. Your task is to analyze 'dirty' filenames or telegram captions and extract clean metadata.
@@ -134,27 +126,32 @@ If no episode number found, return {"episode": null}.
 No markdown, no extra text.
 """
 
-def _extract_text(response) -> str | None:
+async def _chat_json(messages: list[dict], max_tokens: int, retries: int = 2) -> dict | None:
     """
-    Safely pull text out of a Gemini response.
-    Returns None (and logs why) when the model produced no usable text —
-    e.g. empty candidates, a non-STOP finish reason, or a safety block.
+    Call DeepSeek in JSON mode and return the parsed object.
+    deepseek-v4-flash occasionally emits truncated/invalid JSON, so we retry a
+    couple of times on empty or unparseable responses before giving up.
     """
-    text = getattr(response, "text", None)
-    if text:
-        return text
-
-    # Diagnose the empty response so it's clear in the logs why it happened.
-    try:
-        candidates = getattr(response, "candidates", None) or []
-        if not candidates:
-            feedback = getattr(response, "prompt_feedback", None)
-            logger.warning(f"Empty response (no candidates). prompt_feedback={feedback}")
-        else:
-            reason = getattr(candidates[0], "finish_reason", None)
-            logger.warning(f"Empty response. finish_reason={reason}")
-    except Exception as diag_err:
-        logger.debug(f"Could not diagnose empty response: {diag_err}")
+    for attempt in range(retries + 1):
+        await rate_limiter.acquire()
+        response = await client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=TEMPERATURE,
+            max_tokens=max_tokens,
+        )
+        raw = response.choices[0].message.content
+        logger.info(f"DeepSeek raw response: {raw}")
+        if not raw:
+            logger.warning(f"Empty response (attempt {attempt + 1}/{retries + 1}).")
+            continue
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"Malformed JSON (attempt {attempt + 1}/{retries + 1}): {e} | raw={raw!r}"
+            )
     return None
 
 
@@ -164,25 +161,15 @@ async def extract_episode(text: str, title: str, season: int) -> int | None:
     Used in Batch mode.
     """
     try:
-        await rate_limiter.acquire()
-        contents = (
-            f"{EPISODE_SYSTEM_PROMPT}\n\n"
-            f"Anime: {title}\nSeason: {season}\nText: {text}"
+        data = await _chat_json(
+            [
+                {"role": "system", "content": EPISODE_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Anime: {title}\nSeason: {season}\nText: {text}"},
+            ],
+            max_tokens=200,
         )
-        response = await client.aio.models.generate_content(
-            model=MODEL_NAME, contents=contents, config=config
-        )
-        raw = _extract_text(response)
-        if not raw:
+        if not data:
             return None
-        clean = raw.strip()
-        if clean.startswith("```json"):
-            clean = clean[7:]
-        if clean.startswith("```"):
-            clean = clean[3:]
-        if clean.endswith("```"):
-            clean = clean[:-3]
-        data = json.loads(clean.strip())
         ep = data.get("episode")
         return int(ep) if ep is not None else None
     except Exception as e:
@@ -192,40 +179,24 @@ async def extract_episode(text: str, title: str, season: int) -> int | None:
 
 async def extract_metadata(text: str) -> dict | None:
     """
-    Extracts anime metadata using Google Gemini (New SDK).
+    Extracts anime metadata using DeepSeek (OpenAI-compatible API, JSON mode).
     """
     try:
-        # Застосовуємо rate limiting перед викликом API
-        await rate_limiter.acquire()
-        
-        # New SDK Async Call
-        response = await client.aio.models.generate_content(
-            model=MODEL_NAME,
-            contents=f"{SYSTEM_PROMPT}\n\nAnalyze this text and extract metadata: {text}",
-            config=config
+        data = await _chat_json(
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Analyze this text and extract metadata: {text}"},
+            ],
+            max_tokens=500,
         )
-        
-        response_text = _extract_text(response)
-        logger.info(f"Gemini raw response: {response_text}")
-        if not response_text:
+        if not data:
             return None
 
-        # Clean up markdown code blocks if present
-        clean_text = response_text.strip()
-        if clean_text.startswith("```json"):
-            clean_text = clean_text[7:]
-        if clean_text.startswith("```"):
-            clean_text = clean_text[3:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
-        
-        data = json.loads(clean_text.strip())
-        
         # Post-Processing Safeguard: Remove underscores
         if data.get('title'):
             data['title'] = data['title'].replace('_', ' ').strip()
-            
+
         return data
     except Exception as e:
-        logger.error(f"Error calling Gemini API: {e}")
+        logger.error(f"Error calling DeepSeek API: {e}")
         return None
