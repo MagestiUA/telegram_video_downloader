@@ -112,11 +112,17 @@ def resolve_display_title(series: sqlite3.Row) -> str:
     display = series["display_title"]
     if display:
         return display
-    reverse = mapper.get_reverse_mapping(series["title"])
+    title = series["title"]
+    reverse = mapper.get_reverse_mapping(title)
     if reverse:
         set_display_title(series["id"], reverse)
+        logger.info(f"Backfilled display_title: {title!r} -> {reverse!r}")
         return reverse
-    return series["title"]
+    logger.warning(
+        f"No reverse mapping found for title={title!r} (repr shown to catch "
+        f"invisible whitespace/encoding mismatches vs mappings.db)."
+    )
+    return title
 
 
 def get_downloaded_set(series_id: int) -> set[tuple[int, int]]:

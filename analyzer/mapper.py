@@ -48,15 +48,23 @@ class TitleMapper:
         one exists (arbitrary pick if multiple raw variants map to the same
         official title). Used to backfill a readable display name for
         records that predate display_title tracking.
+
+        Compares with whitespace collapsed and case-folded on both sides —
+        official titles were manually typed by the user on different
+        occasions (once per confirmation prompt) and can differ by a stray
+        double space or capitalization without being a "different" title.
+        A plain SQL exact match (even with COLLATE NOCASE) misses those.
         """
         if not official_title:
             return None
+        target = " ".join(official_title.split()).lower()
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT raw_title FROM mappings WHERE official_title = ? COLLATE NOCASE LIMIT 1",
-                (official_title.strip(),)
-            ).fetchone()
-        return row["raw_title"] if row else None
+            rows = conn.execute("SELECT raw_title, official_title FROM mappings").fetchall()
+        for row in rows:
+            candidate = " ".join((row["official_title"] or "").split()).lower()
+            if candidate == target:
+                return row["raw_title"]
+        return None
 
     def add_mapping(self, bad_title: str, correct_title: str):
         """Adds (or overwrites) a mapping."""

@@ -693,6 +693,20 @@ async def dorama_stop_callback(client: Client, query: CallbackQuery):
         pass
 
 
+async def _run_checkall(client: Client, series_list: list, status_msg: Message):
+    """Run process_series for every title, then finalize the status message."""
+    try:
+        await asyncio.gather(
+            *[dorama_checker.process_series(s, client) for s in series_list],
+            return_exceptions=True
+        )
+    finally:
+        try:
+            await status_msg.edit_text(f"✅ Перевірку завершено ({len(series_list)} тайтлів).")
+        except Exception:
+            pass
+
+
 @app.on_callback_query(auth_filter & filters.regex("^dorama_checkall_"))
 async def dorama_checkall_callback(client: Client, query: CallbackQuery):
     category = query.data.replace("dorama_checkall_", "", 1)
@@ -702,8 +716,10 @@ async def dorama_checkall_callback(client: Client, query: CallbackQuery):
         return
 
     await query.answer(f"🔄 Перевіряю {len(series_list)} тайтлів...")
-    for s in series_list:
-        asyncio.create_task(dorama_checker.process_series(s, client))
+    status_msg = await query.message.reply_text(
+        f"🔄 Перевірка розпочалась: {len(series_list)} тайтлів..."
+    )
+    asyncio.create_task(_run_checkall(client, series_list, status_msg))
 
 
 # ── ANIME MODE (Telegram-link auto-tracking) ─────────────────────────────────
