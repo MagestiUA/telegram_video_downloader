@@ -58,10 +58,18 @@ async def process_series(series: db.sqlite3.Row, client) -> bool:
         except Exception as e:
             logger.warning(f"Notify failed: {e}")
 
-        ok = await handler.download(
-            source, title, season, episode,
-            dest_path, notify_msg=notify_msg
-        )
+        try:
+            ok = await handler.download(
+                source, title, season, episode,
+                dest_path, notify_msg=notify_msg
+            )
+        except Exception as e:
+            # handler.download() is expected to return False on failure, never
+            # raise — but guard against it anyway so a bug in a handler can't
+            # silently kill this task (asyncio.create_task is fire-and-forget
+            # on the immediate-add path in main.py).
+            logger.error(f"[{title}] download() raised unexpectedly: {e}", exc_info=True)
+            ok = False
 
         if ok:
             db.record_episode(series_id, season, episode)

@@ -84,37 +84,46 @@ class TelegramHandler(BaseSiteHandler):
 
     async def download(self, source: str, title: str, season: int, episode: int,
                        path: str, notify_msg=None) -> bool:
-        client = get_userbot_client()
-        if not client:
-            logger.error("Userbot client not available for download.")
-            return False
-
-        chat, msg_id_str = source.split(":", 1)
-        message = await client.get_messages(chat, int(msg_id_str))
-        media = message.video or message.document
-        if not media:
-            logger.error(f"No media on message {source}")
-            return False
-
-        safe = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
-        out_dir = os.path.join(path, safe)
-        os.makedirs(out_dir, exist_ok=True)
-
-        _, ext = os.path.splitext(media.file_name or "")
-        if not ext:
-            ext = ".mp4"
-        target = os.path.join(out_dir, f"{safe} - S{season:02d}E{episode:02d}{ext}")
-
-        start_time = time.time()
-
-        async def progress(current, total):
-            await progress_bar(current, total, notify_msg, start_time)
-
+        """
+        Never raises — always returns bool, logging the reason on failure.
+        This is a hard contract: the caller may run this from a fire-and-forget
+        asyncio.create_task with no exception handler attached.
+        """
         try:
+            client = get_userbot_client()
+            if not client:
+                logger.error("Userbot client not available for download.")
+                return False
+
+            chat, msg_id_str = source.split(":", 1)
+            message = await client.get_messages(chat, int(msg_id_str))
+            media = message.video or message.document
+            if not media:
+                logger.error(f"No media on message {source}")
+                return False
+
+            safe = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
+            # Safety net: even the mapper-resolved official title could in theory be
+            # very long; clamp so folder+file names stay well under typical
+            # filesystem NAME_MAX (255 bytes — Cyrillic is 2 bytes/char in UTF-8).
+            safe = safe[:120].rstrip()
+            out_dir = os.path.join(path, safe)
+            os.makedirs(out_dir, exist_ok=True)
+
+            _, ext = os.path.splitext(media.file_name or "")
+            if not ext:
+                ext = ".mp4"
+            target = os.path.join(out_dir, f"{safe} - S{season:02d}E{episode:02d}{ext}")
+
+            start_time = time.time()
+
+            async def progress(current, total):
+                await progress_bar(current, total, notify_msg, start_time)
+
             downloaded_path = await client.download_media(
                 message, file_name=target, progress=progress
             )
             return bool(downloaded_path)
         except Exception as e:
-            logger.error(f"Telegram download failed: {e}")
+            logger.error(f"Telegram download failed: {e}", exc_info=True)
             return False

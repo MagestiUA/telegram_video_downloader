@@ -702,11 +702,27 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     status = await message.reply_text("⏳ Отримую інформацію про тайтл...")
     chat_id = message.chat.id
 
-    # No confirm/rename friction — add immediately. Only ask if the title
-    # genuinely couldn't be auto-detected.
-    auto_title = await handler.get_series_title(url)
-    if auto_title:
-        title = auto_title
+    # Resolve the RAW caption-derived title (Ukrainian/localized) into the
+    # OFFICIAL Romaji title via the same mapper.json used by Normal/Batch mode.
+    # This keeps the folder name identical to manually-forwarded downloads and
+    # avoids using long localized titles as filesystem folder names directly.
+    raw_title = await handler.get_series_title(url)
+
+    if raw_title:
+        mapped_title = mapper.get_mapping(raw_title)
+        if mapped_title:
+            title = mapped_title  # known title — zero friction
+        else:
+            title = await ask_user_fresh(
+                chat_id,
+                f"⚠️ Невідомий тайтл: `{raw_title}`\n\n"
+                f"Введіть **офіційну Romaji назву** для збереження _(або `cancel`)_:"
+            )
+            if not title:
+                try: await status.edit_text("❌ Скасовано.")
+                except Exception: pass
+                return
+            mapper.add_mapping(raw_title, title)
     else:
         title = await ask_user_fresh(
             chat_id,
