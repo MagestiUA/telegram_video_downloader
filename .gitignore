@@ -35,7 +35,7 @@ sessions/
 *.session-journal
 
 # Project specific
-mappings.json
+mappings.json*
 README.zip
 
 # Debug/test scripts (local only)

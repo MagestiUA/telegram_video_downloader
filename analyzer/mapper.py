@@ -1,54 +1,58 @@
-import json
 import os
+import sqlite3
 import logging
 
 logger = logging.getLogger(__name__)
 
-MAPPING_FILE = "mappings.json"
+DB_PATH = "sessions/mappings.db"
+
 
 class TitleMapper:
-    def __init__(self, mapping_file=MAPPING_FILE):
-        self.mapping_file = mapping_file
-        self.mappings = self._load_mappings()
+    """
+    Persistent raw-title -> official-title dictionary, backed by SQLite.
+    """
 
-    def _load_mappings(self) -> dict:
-        if not os.path.exists(self.mapping_file):
-            return {}
-        try:
-            with open(self.mapping_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            logger.error(f"Failed to decode {self.mapping_file}, returning empty mappings.")
-            return {}
-        except Exception as e:
-            logger.error(f"Error loading mappings: {e}")
-            return {}
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+        self._init_db()
 
-    def _save_mappings(self):
-        try:
-            with open(self.mapping_file, "w", encoding="utf-8") as f:
-                json.dump(self.mappings, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            logger.error(f"Error saving mappings: {e}")
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS mappings (
+                    raw_title      TEXT PRIMARY KEY,
+                    official_title TEXT NOT NULL
+                )
+            """)
 
     def get_mapping(self, bad_title: str) -> str | None:
-        """
-        Returns the corrected title if a mapping exists.
-        Case-insensitive lookup could be implemented here if needed,
-        but for now we stick to exact or normalized match.
-        """
-        return self.mappings.get(bad_title.strip())
+        """Returns the corrected title if a mapping exists (exact match on stripped raw title)."""
+        if not bad_title:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT official_title FROM mappings WHERE raw_title = ?",
+                (bad_title.strip(),)
+            ).fetchone()
+        return row["official_title"] if row else None
 
     def add_mapping(self, bad_title: str, correct_title: str):
-        """
-        Adds a new mapping and saves to file.
-        """
+        """Adds (or overwrites) a mapping."""
         if not bad_title or not correct_title:
             return
-        
-        self.mappings[bad_title.strip()] = correct_title.strip()
-        self._save_mappings()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO mappings (raw_title, official_title) VALUES (?, ?)",
+                (bad_title.strip(), correct_title.strip())
+            )
         logger.info(f"Added mapping: '{bad_title}' -> '{correct_title}'")
+
 
 # Global instance
 mapper = TitleMapper()

@@ -22,7 +22,8 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     """
     series_id = series["id"]
     chat_id   = series["chat_id"]
-    title     = series["title"]
+    title     = series["title"]  # canonical Romaji — used for folder/file naming
+    display   = series["display_title"] or title  # localized name shown to users
     url       = series["base_url"]
     category  = series["category"]
     dest_path = settings.DOWNLOAD_PATH if category == "anime" else settings.DORAMA_PATH
@@ -37,14 +38,14 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     handler = get_handler(url)
     if not handler:
         logger.error(f"No handler for url: {url}")
-        await _finalize_status(f"❌ **{title}**: джерело не підтримується.")
+        await _finalize_status(f"❌ **{display}**: джерело не підтримується.")
         return False
 
     # Fetch all currently available DUB episodes
     available = await handler.list_episodes(url)
     if not available:
         logger.info(f"[{title}] немає доступних дубльованих епізодів.")
-        await _finalize_status(f"⚠️ **{title}**: серій ще не знайдено.")
+        await _finalize_status(f"⚠️ **{display}**: серій ще не знайдено.")
         return False
 
     done = db.get_downloaded_set(series_id)
@@ -56,13 +57,13 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     if not new_eps:
         logger.info(f"[{title}] нових епізодів немає ({len(available)} вже завантажено).")
         await _finalize_status(
-            f"✅ **{title}**: усі доступні серії вже завантажені ({len(available)})."
+            f"✅ **{display}**: усі доступні серії вже завантажені ({len(available)})."
         )
         return False
 
     logger.info(f"[{title}] знайдено {len(new_eps)} нових епізодів.")
     await _finalize_status(
-        f"✅ **{title}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
+        f"✅ **{display}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
     )
     downloaded_any = False
 
@@ -73,7 +74,7 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         try:
             notify_msg = await client.send_message(
                 chat_id,
-                f"🎬 **{title}** S{season:02d}E{episode:02d}\n⏳ Починаю завантаження..."
+                f"🎬 **{display}** S{season:02d}E{episode:02d}\n⏳ Починаю завантаження..."
             )
         except Exception as e:
             logger.warning(f"Notify failed: {e}")
@@ -97,7 +98,7 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
             is_finale = ep.get("is_finale", False)
 
             done_text = (
-                f"✅ Завантажено: **{title}** S{season:02d}E{episode:02d}"
+                f"✅ Завантажено: **{display}** S{season:02d}E{episode:02d}"
                 + ("\n🏁 Це остання серія — знято з відстеження." if is_finale else "")
             )
 
@@ -123,7 +124,7 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
             try:
                 if notify_msg:
                     await notify_msg.edit_text(
-                        f"❌ Помилка завантаження: **{title}** S{season:02d}E{episode:02d}"
+                        f"❌ Помилка завантаження: **{display}** S{season:02d}E{episode:02d}"
                     )
             except Exception:
                 pass

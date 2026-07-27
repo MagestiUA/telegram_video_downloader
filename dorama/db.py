@@ -49,22 +49,43 @@ def init_db():
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(series)").fetchall()}
         if "category" not in cols:
             conn.execute("ALTER TABLE series ADD COLUMN category TEXT NOT NULL DEFAULT 'dorama'")
+        # Migration: `display_title` is the localized/raw caption title shown
+        # to users (readable), while `title` stays the official Romaji name
+        # used for folder/file naming. Older DBs predate this column.
+        if "display_title" not in cols:
+            conn.execute("ALTER TABLE series ADD COLUMN display_title TEXT")
     logger.info("Dorama DB initialized.")
 
 
-def add_series(chat_id: int, title: str, url: str, category: str = "dorama") -> int:
+def add_series(chat_id: int, title: str, url: str, category: str = "dorama",
+               display_title: str | None = None) -> int:
     """
     Add a new series/title to track.
     `url` — the page used to list available episodes (per-episode/serial root/TG topic).
     `category` — "dorama" (-> DORAMA_PATH) or "anime" (-> DOWNLOAD_PATH).
+    `title` — official Romaji title, used for folder/file naming.
+    `display_title` — localized/raw title shown in bot messages (falls back
+    to `title` if not given).
     Stored in the base_url column. Episode tracking is driven by the `episodes` table.
     """
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO series (chat_id, title, base_url, category) VALUES (?, ?, ?, ?)",
-            (chat_id, title, url, category)
+            "INSERT INTO series (chat_id, title, base_url, category, display_title) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, title, url, category, display_title or title)
         )
         return cur.lastrowid
+
+
+def find_active_series_by_title(title: str, category: str) -> sqlite3.Row | None:
+    """
+    Case-insensitive lookup for an already-tracked active series with the
+    same (official) title in this category — used to reject duplicate adds.
+    """
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM series WHERE active = 1 AND category = ? AND title = ? COLLATE NOCASE",
+            (category, title.strip())
+        ).fetchone()
 
 
 def get_downloaded_set(series_id: int) -> set[tuple[int, int]]:

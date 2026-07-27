@@ -653,12 +653,14 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
     buttons = []
     for s in series_list:
         started = s["started_at"][:10]
+        display = s["display_title"] or s["title"]
         text += (
-            f"• **{s['title']}**\n"
+            f"• **{display}**\n"
             f"  S{s['last_season']:02d}E{s['last_episode']:02d} | додано {started}\n\n"
         )
         buttons.append([
-            InlineKeyboardButton(f"⏹ {s['title']}", callback_data=f"dorama_stop_{s['id']}")
+            InlineKeyboardButton("🔄 Перевірити", callback_data=f"dorama_check_{s['id']}"),
+            InlineKeyboardButton(f"⏹ {display}", callback_data=f"dorama_stop_{s['id']}"),
         ])
     return text, InlineKeyboardMarkup(buttons)
 
@@ -667,7 +669,7 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
 async def dorama_stop_callback(client: Client, query: CallbackQuery):
     series_id = int(query.data.split("_")[-1])
     series = dorama_db.get_series_by_id(series_id)
-    title = series["title"] if series else f"#{series_id}"
+    title = (series["display_title"] or series["title"]) if series else f"#{series_id}"
     category = series["category"] if series else "dorama"
 
     dorama_db.stop_series(series_id)
@@ -687,6 +689,19 @@ async def dorama_stop_callback(client: Client, query: CallbackQuery):
         await query.message.edit_text(text, reply_markup=kb)
     except Exception:
         pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^dorama_check_"))
+async def dorama_check_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    series = dorama_db.get_series_by_id(series_id)
+    if not series:
+        await query.answer("Тайтл не знайдено.")
+        return
+
+    title = series["display_title"] or series["title"]
+    await query.answer(f"🔄 Перевіряю: {title}")
+    asyncio.create_task(dorama_checker.process_series(series, client))
 
 
 # ── ANIME MODE (Telegram-link auto-tracking) ─────────────────────────────────
@@ -852,7 +867,20 @@ async def _track_anime_url(client: Client, message: Message, url: str):
             except Exception: pass
             return
 
-    series_id = dorama_db.add_series(chat_id, title, url, category="anime")
+    # Prevent adding the same title twice (e.g. via two different channels'
+    # links for the same anime) — check by the resolved official title.
+    existing_series = dorama_db.find_active_series_by_title(title, category="anime")
+    if existing_series:
+        try:
+            await status.edit_text(
+                f"⚠️ **{title}** вже відстежується (додано {existing_series['started_at'][:10]})."
+            )
+        except Exception:
+            pass
+        return
+
+    display_title = raw_title or title
+    series_id = dorama_db.add_series(chat_id, title, url, category="anime", display_title=display_title)
     series_row = dorama_db.get_series_by_id(series_id)
 
     # Pre-seed episodes already present on disk (e.g. from earlier manual
