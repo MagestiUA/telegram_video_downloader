@@ -62,7 +62,7 @@ class TelegramHandler(BaseSiteHandler):
     async def get_series_title(self, url: str) -> str | None:
         chat, anchor_id = self._parse(url)
         async for msg in self._iter_video_replies(chat, anchor_id):
-            caption = msg.caption or msg.text or ""
+            caption = str(msg.caption or msg.text or "")
             data = await extract_metadata(caption)
             return data.get("title") if data else None
         return None
@@ -73,7 +73,7 @@ class TelegramHandler(BaseSiteHandler):
         cache_hits = 0
         cache_misses = 0
         async for msg in self._iter_video_replies(chat, anchor_id):
-            caption = msg.caption or msg.text or ""
+            caption = str(msg.caption or msg.text or "")
 
             # A message's caption never changes after posting — once resolved,
             # never re-run DeepSeek on it again. This is what previously made

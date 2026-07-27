@@ -167,7 +167,12 @@ async def log_all_messages(client, message):
     user = message.from_user
     user_id = user.id if user else "Unknown"
     name = user.first_name if user else "Unknown"
-    text_preview = message.text or message.caption or "Media/Other"
+    # str() first: Pyrogram's Message text is a custom str subclass with
+    # UTF-16-surrogate-aware slicing (for entity offset correctness) that can
+    # raise UnicodeDecodeError if a slice lands mid-surrogate-pair (e.g. an
+    # emoji right at the cutoff). Converting to plain str avoids that crash
+    # for this purely-cosmetic log preview.
+    text_preview = str(message.text or message.caption or "Media/Other")
     logger.info(f"📨 MSG | User: {name} ({user_id}) | Chat: {message.chat.id} | Content: {text_preview[:50]}")
 
 
