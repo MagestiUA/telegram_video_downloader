@@ -677,9 +677,19 @@ ANIME_HELP = (
 )
 
 
-# Matches a bare Telegram topic/message link anywhere in a text message,
-# e.g. "https://t.me/RH_MediaLib/20835" (with or without an /anime prefix).
-TG_LINK_RE = re.compile(r'https?://t\.me/[A-Za-z0-9_]+/\d+')
+# Matches a Telegram topic/message link anywhere in a text message, with or
+# without a URL scheme — "https://t.me/RH_MediaLib/20835" and bare
+# "t.me/RH_MediaLib/20823" both match. The (?<![\w.]) guard prevents matching
+# "t.me" embedded inside a longer word/domain (e.g. "not.me/xyz/123").
+TG_LINK_RE = re.compile(r'(?:https?://)?(?<![\w.])t\.me/[A-Za-z0-9_]+/\d+', re.IGNORECASE)
+
+
+def _normalize_url(url: str) -> str:
+    """Prepend https:// if the URL was given without a scheme (bare t.me link)."""
+    url = url.strip()
+    if not re.match(r'^https?://', url, re.IGNORECASE):
+        url = f"https://{url}"
+    return url
 
 
 async def _track_anime_url(client: Client, message: Message, url: str):
@@ -688,6 +698,7 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     Used by both `/anime {url}` and a bare t.me link pasted directly
     (no command prefix needed — the bot reacts to the link itself).
     """
+    url = _normalize_url(url)
     handler = get_site_handler(url)
     if not handler:
         domains = ", ".join(supported_domains())
