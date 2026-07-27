@@ -298,24 +298,10 @@ async def text_handler(client: Client, message: Message):
             future.set_result(message.text)
         return
 
-    text = message.text or ""
-
-    # Bare t.me link (no /anime prefix) → auto-add to anime tracking
-    m = TG_LINK_RE.search(text)
-    if m:
-        await _track_anime_url(client, message, m.group(0))
+    url = await _find_watch_link(message.text or "")
+    if url:
+        await _track_anime_url(client, message, url)
         return
-
-    # Fallback: no plain t.me link found, but this might be a forwarded/pasted
-    # channel post whose "watch online" link is phrased differently than
-    # expected, or buried among donation/download links — channel formats vary
-    # too much for a fixed regex, so ask DeepSeek to find it by context.
-    # Guarded by a length check so short chit-chat doesn't burn API calls.
-    if len(text) >= 60:
-        url = await extract_watch_link(text)
-        if url:
-            await _track_anime_url(client, message, url)
-            return
 
 
 # --- Shared Utilities ---
@@ -499,6 +485,14 @@ async def video_handler(client: Client, message: Message):
         return
 
     logger.info(f"New video from: {message.chat.title or message.chat.first_name}")
+
+    # Opportunistic: some channel posts forwarded together with a video
+    # include a link to the full topic/archive in their caption (e.g.
+    # "Онлайн в телеграмі: t.me/...") — if found, kick off anime tracking for
+    # the whole title in the background. Best-effort and independent of the
+    # single-video download below (already-downloaded episodes are skipped
+    # via the existing-files scan, so this doesn't duplicate this video).
+    asyncio.create_task(_maybe_track_from_caption(client, message))
 
     status_msg = None
     try:
@@ -703,6 +697,40 @@ def _normalize_url(url: str) -> str:
     if not re.match(r'^https?://', url, re.IGNORECASE):
         url = f"https://{url}"
     return url
+
+
+async def _find_watch_link(text: str) -> str | None:
+    """
+    Look for a "watch online with dub" Telegram topic link inside arbitrary
+    text — a plain-text message OR a forwarded video's caption. Fast regex
+    first; if that finds nothing and the text is long enough to plausibly be
+    a channel post (not short chit-chat), fall back to DeepSeek to identify
+    the link by context (channel post formats vary too much for regex alone
+    to reliably separate it from donation/download/subscribe links).
+    """
+    if not text:
+        return None
+    m = TG_LINK_RE.search(text)
+    if m:
+        return m.group(0)
+    if len(text) >= 60:
+        return await extract_watch_link(text)
+    return None
+
+
+async def _maybe_track_from_caption(client: Client, message: Message):
+    """
+    Best-effort background check: does this video's caption also contain a
+    "watch all episodes" topic link? If so, start anime tracking for it.
+    Runs as a fire-and-forget task from video_handler — any failure here must
+    never affect the primary single-video download.
+    """
+    try:
+        url = await _find_watch_link(message.caption or "")
+        if url:
+            await _track_anime_url(client, message, url)
+    except Exception as e:
+        logger.error(f"Caption-based tracking check failed: {e}", exc_info=True)
 
 
 async def _track_anime_url(client: Client, message: Message, url: str):
