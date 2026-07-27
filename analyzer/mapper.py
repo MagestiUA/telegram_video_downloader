@@ -42,6 +42,22 @@ class TitleMapper:
             ).fetchone()
         return row["official_title"] if row else None
 
+    def get_reverse_mapping(self, official_title: str) -> str | None:
+        """
+        Return any raw/localized title that maps to this official title, if
+        one exists (arbitrary pick if multiple raw variants map to the same
+        official title). Used to backfill a readable display name for
+        records that predate display_title tracking.
+        """
+        if not official_title:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT raw_title FROM mappings WHERE official_title = ? COLLATE NOCASE LIMIT 1",
+                (official_title.strip(),)
+            ).fetchone()
+        return row["raw_title"] if row else None
+
     def add_mapping(self, bad_title: str, correct_title: str):
         """Adds (or overwrites) a mapping."""
         if not bad_title or not correct_title:

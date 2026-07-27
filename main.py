@@ -650,17 +650,19 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
             None
         )
     text = f"📋 **{label} / відстеження:**\n\n"
-    buttons = []
+    buttons = [[
+        InlineKeyboardButton("🔄✅ Перевірити все", callback_data=f"dorama_checkall_{category}")
+    ]]
     for s in series_list:
         started = s["started_at"][:10]
-        display = s["display_title"] or s["title"]
+        display = dorama_db.resolve_display_title(s)  # backfills legacy rows via mapper.db reverse lookup
+
         text += (
             f"• **{display}**\n"
             f"  S{s['last_season']:02d}E{s['last_episode']:02d} | додано {started}\n\n"
         )
         buttons.append([
-            InlineKeyboardButton("🔄 Перевірити", callback_data=f"dorama_check_{s['id']}"),
-            InlineKeyboardButton(f"⏹ {display}", callback_data=f"dorama_stop_{s['id']}"),
+            InlineKeyboardButton(f"⏹ {display}", callback_data=f"dorama_stop_{s['id']}")
         ])
     return text, InlineKeyboardMarkup(buttons)
 
@@ -669,7 +671,7 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
 async def dorama_stop_callback(client: Client, query: CallbackQuery):
     series_id = int(query.data.split("_")[-1])
     series = dorama_db.get_series_by_id(series_id)
-    title = (series["display_title"] or series["title"]) if series else f"#{series_id}"
+    title = dorama_db.resolve_display_title(series) if series else f"#{series_id}"
     category = series["category"] if series else "dorama"
 
     dorama_db.stop_series(series_id)
@@ -691,17 +693,17 @@ async def dorama_stop_callback(client: Client, query: CallbackQuery):
         pass
 
 
-@app.on_callback_query(auth_filter & filters.regex("^dorama_check_"))
-async def dorama_check_callback(client: Client, query: CallbackQuery):
-    series_id = int(query.data.split("_")[-1])
-    series = dorama_db.get_series_by_id(series_id)
-    if not series:
-        await query.answer("Тайтл не знайдено.")
+@app.on_callback_query(auth_filter & filters.regex("^dorama_checkall_"))
+async def dorama_checkall_callback(client: Client, query: CallbackQuery):
+    category = query.data.replace("dorama_checkall_", "", 1)
+    series_list = dorama_db.get_all_active_series(category)
+    if not series_list:
+        await query.answer("Немає активних тайтлів.")
         return
 
-    title = series["display_title"] or series["title"]
-    await query.answer(f"🔄 Перевіряю: {title}")
-    asyncio.create_task(dorama_checker.process_series(series, client))
+    await query.answer(f"🔄 Перевіряю {len(series_list)} тайтлів...")
+    for s in series_list:
+        asyncio.create_task(dorama_checker.process_series(s, client))
 
 
 # ── ANIME MODE (Telegram-link auto-tracking) ─────────────────────────────────

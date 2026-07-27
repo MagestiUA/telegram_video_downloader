@@ -23,7 +23,7 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     series_id = series["id"]
     chat_id   = series["chat_id"]
     title     = series["title"]  # canonical Romaji — used for folder/file naming
-    display   = series["display_title"] or title  # localized name shown to users
+    display   = db.resolve_display_title(series)  # localized name shown to users (backfills legacy rows)
     url       = series["base_url"]
     category  = series["category"]
     dest_path = settings.DOWNLOAD_PATH if category == "anime" else settings.DORAMA_PATH

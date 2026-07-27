@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from analyzer.mapper import mapper
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = "sessions/dorama.db"
@@ -86,6 +88,35 @@ def find_active_series_by_title(title: str, category: str) -> sqlite3.Row | None
             "SELECT * FROM series WHERE active = 1 AND category = ? AND title = ? COLLATE NOCASE",
             (category, title.strip())
         ).fetchone()
+
+
+def set_display_title(series_id: int, display_title: str):
+    """Backfill/update the localized display name for an existing series row."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE series SET display_title = ? WHERE id = ?",
+            (display_title, series_id)
+        )
+
+
+def resolve_display_title(series: sqlite3.Row) -> str:
+    """
+    Return the localized display name for a series row shown in bot
+    messages. If this row predates display_title tracking (added before that
+    column existed), backfill it via mapper.db's reverse lookup (raw
+    localized title -> official title) and persist the result so this only
+    ever needs to happen once. Used by BOTH the /anime list rendering and
+    checker.py's download notifications, so either one being viewed first
+    fixes it for both.
+    """
+    display = series["display_title"]
+    if display:
+        return display
+    reverse = mapper.get_reverse_mapping(series["title"])
+    if reverse:
+        set_display_title(series["id"], reverse)
+        return reverse
+    return series["title"]
 
 
 def get_downloaded_set(series_id: int) -> set[tuple[int, int]]:
