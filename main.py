@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pyrogram import Client, idle, filters
@@ -294,6 +295,12 @@ async def text_handler(client: Client, message: Message):
         future = waiting_for_user_input[chat_id]
         if not future.done():
             future.set_result(message.text)
+        return
+
+    # Bare t.me link (no /anime prefix) → auto-add to anime tracking
+    m = TG_LINK_RE.search(message.text or "")
+    if m:
+        await _track_anime_url(client, message, m.group(0))
         return
 
 
@@ -653,7 +660,9 @@ ANIME_HELP = (
     "Скинь посилання на топік у Telegram-каналі (медіатеці) — тайтл одразу "
     "додається до відстеження. Бот перевірятиме нові серії кожні **6 годин**.\n\n"
     "**Як додати:**\n"
-    "`/anime https://t.me/КаналНазва/12345`\n\n"
+    "Просто кинь посилання боту (можна без команди):\n"
+    "`https://t.me/КаналНазва/12345`\n"
+    "або: `/anime https://t.me/КаналНазва/12345`\n\n"
     "**Про завантаження:**\n"
     "• Додається одразу, без підтвердження — якщо назву не вдалось розпізнати, бот перепитає\n"
     "• Сезон/епізод кожної серії визначає AI з підпису повідомлення\n"
@@ -667,21 +676,17 @@ ANIME_HELP = (
 )
 
 
-@app.on_message(auth_filter & filters.command("anime"))
-async def anime_command(client: Client, message: Message):
-    parts = message.text.strip().split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
+# Matches a bare Telegram topic/message link anywhere in a text message,
+# e.g. "https://t.me/RH_MediaLib/20835" (with or without an /anime prefix).
+TG_LINK_RE = re.compile(r'https?://t\.me/[A-Za-z0-9_]+/\d+')
 
-    if arg == "help":
-        await message.reply_text(ANIME_HELP)
-        return
 
-    if not arg or arg == "list":
-        text, kb = _tracking_list_content(message.chat.id, "anime")
-        await message.reply_text(text, reply_markup=kb)
-        return
-
-    url = arg
+async def _track_anime_url(client: Client, message: Message, url: str):
+    """
+    Shared logic for adding a title to anime tracking.
+    Used by both `/anime {url}` and a bare t.me link pasted directly
+    (no command prefix needed — the bot reacts to the link itself).
+    """
     handler = get_site_handler(url)
     if not handler:
         domains = ", ".join(supported_domains())
@@ -724,6 +729,23 @@ async def anime_command(client: Client, message: Message):
         pass
 
     asyncio.create_task(dorama_checker.process_series(series_row, client))
+
+
+@app.on_message(auth_filter & filters.command("anime"))
+async def anime_command(client: Client, message: Message):
+    parts = message.text.strip().split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if arg == "help":
+        await message.reply_text(ANIME_HELP)
+        return
+
+    if not arg or arg == "list":
+        text, kb = _tracking_list_content(message.chat.id, "anime")
+        await message.reply_text(text, reply_markup=kb)
+        return
+
+    await _track_anime_url(client, message, arg)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
