@@ -5,6 +5,7 @@ import re
 from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pyrogram import Client, idle, filters
+from pyrogram.enums import MessageEntityType
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
 from pyrogram.errors import FloodWait
 from config.config import settings
@@ -298,7 +299,7 @@ async def text_handler(client: Client, message: Message):
             future.set_result(message.text)
         return
 
-    url = await _find_watch_link(message.text or "")
+    url = await _find_watch_link(message)
     if url:
         await _track_anime_url(client, message, url)
         return
@@ -713,22 +714,49 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-async def _find_watch_link(text: str) -> str | None:
+def _extract_link_entities(message: Message) -> list[tuple[str, str]]:
     """
-    Look for a "watch online with dub" Telegram topic link inside arbitrary
-    text — a plain-text message OR a forwarded video's caption. Fast regex
-    first; if that finds nothing and the text is long enough to plausibly be
-    a channel post (not short chit-chat), fall back to DeepSeek to identify
-    the link by context (channel post formats vary too much for regex alone
-    to reliably separate it from donation/download/subscribe links).
+    Return [(visible_label, url), ...] for masked hyperlinks in a message's
+    text or caption. Needed because some channels format their "watch online"
+    link as a hyperlink where the visible label (e.g. "ONLINE (озвучення)")
+    is all that appears in the text — the real URL is only in the entity
+    metadata, invisible to both a plain-text regex and an LLM given text alone.
     """
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    links = []
+    for e in entities:
+        if e.type == MessageEntityType.TEXT_LINK and e.url:
+            label = text[e.offset: e.offset + e.length]
+            links.append((label, e.url))
+    return links
+
+
+async def _find_watch_link(message: Message) -> str | None:
+    """
+    Look for a "watch online with dub" Telegram topic link in a message's
+    text or caption — a plain-text message, a forwarded video's caption, or a
+    photo-post caption.
+
+    Checks, in order:
+    1. A bare regex match in the visible text (fast, free, no API call).
+    2. DeepSeek, given the text and any masked-hyperlink candidates found via
+       entity metadata (label -> url) — needed since some channels hide the
+       real URL behind a label like "ONLINE (озвучення)" that never appears
+       as plain text. Runs whenever hyperlinks were found, or the text is
+       long enough to plausibly be a channel post (skips short chit-chat).
+    """
+    text = message.text or message.caption or ""
     if not text:
         return None
+
     m = TG_LINK_RE.search(text)
     if m:
         return m.group(0)
-    if len(text) >= 60:
-        return await extract_watch_link(text)
+
+    hyperlinks = _extract_link_entities(message)
+    if hyperlinks or len(text) >= 60:
+        return await extract_watch_link(text, hyperlinks=hyperlinks or None)
     return None
 
 
@@ -740,7 +768,7 @@ async def _maybe_track_from_caption(client: Client, message: Message):
     never affect the primary single-video download.
     """
     try:
-        url = await _find_watch_link(message.caption or "")
+        url = await _find_watch_link(message)
         if url:
             await _track_anime_url(client, message, url)
     except Exception as e:
@@ -877,7 +905,7 @@ if __name__ == "__main__":
         worker_task  = asyncio.create_task(queue_manager.worker())
         checker_task = asyncio.create_task(dorama_checker.run_checker(app))
         logger.info("Queue worker started")
-        logger.info("Dorama checker started")
+        logger.info("Anime checker started")
 
         await idle()
 

@@ -137,20 +137,25 @@ No markdown, no extra text.
 """
 
 WATCH_LINK_SYSTEM_PROMPT = """
-You are given the raw text of a Telegram channel post announcing a new anime episode.
+You are given the text of a Telegram channel post announcing a new anime
+episode, and — when the post uses masked/hidden hyperlinks (the real URL
+never appears as plain text, only a clickable label does) — a list of those
+hyperlinks as "label" -> url pairs.
 
-Your task: find the link to WATCH THE EPISODE ONLINE WITH VOICEOVER/DUB inside
-Telegram (usually a t.me link, often labeled something like "Онлайн в телеграмі",
-"Дивитись онлайн", "Watch online", "Watch here", or similar — but the exact
-wording varies between channels).
+Your task: find the link to WATCH THE EPISODE ONLINE WITH VOICEOVER/DUB
+(озвучення) inside Telegram (often labeled "Онлайн в телеграмі", "Дивитись
+онлайн", "ONLINE (озвучення)", "Watch online", or similar — wording varies
+between channels).
 
-IGNORE and never return links for:
-- Donations / support (Patreon, Buymeacoffee, Privat24, MonoBank, USDT / crypto wallets)
-- Direct file downloads (fex.net or any other file-hosting service)
-- Unrelated Telegram channel/chat/subscribe links
-- Social media, credits, or any other purpose
+RULES:
+- If both a dub ("озвучення") and a subtitles-only ("субтитри") online link
+  exist, ALWAYS prefer the dub/voiceover one.
+- IGNORE and never return: donation/support links (Patreon, Buymeacoffee,
+  Privat24, MonoBank, Крипта, USDT/crypto wallets), direct file downloads
+  (fex.net, toloka, or any other file-hosting/torrent site), unrelated
+  channel/chat/subscribe links, or credits/social media.
 
-Return ONLY valid JSON: {"url": "<the watch-online link>"}
+Return ONLY valid JSON: {"url": "<the watch-online-with-dub link>"}
 If no such link is found, return {"url": null}.
 No markdown, no extra text.
 """
@@ -232,18 +237,28 @@ async def extract_metadata(text: str) -> dict | None:
         return None
 
 
-async def extract_watch_link(text: str) -> str | None:
+async def extract_watch_link(text: str, hyperlinks: list[tuple[str, str]] | None = None) -> str | None:
     """
     Uses DeepSeek to find a "watch online with dub" Telegram link inside an
     arbitrary channel post, distinguishing it from donation/download/unrelated
     links by context — channel post formats vary too much for a fixed regex
     to reliably tell them apart.
+
+    `hyperlinks` — [(visible_label, url), ...] extracted from masked/text-link
+    entities in the message. Some channels hide the real URL behind a label
+    like "ONLINE (озвучення)" — the actual href never appears as plain text,
+    so it must be passed in separately for the model to even see it.
     """
     try:
+        user_content = text
+        if hyperlinks:
+            links_block = "\n".join(f'- "{label}" -> {url}' for label, url in hyperlinks)
+            user_content = f"POST TEXT:\n{text}\n\nHYPERLINKS FOUND IN THE POST:\n{links_block}"
+
         data = await _chat_json(
             [
                 {"role": "system", "content": WATCH_LINK_SYSTEM_PROMPT},
-                {"role": "user", "content": text},
+                {"role": "user", "content": user_content},
             ],
         )
         if not data:

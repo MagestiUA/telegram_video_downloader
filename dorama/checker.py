@@ -134,16 +134,16 @@ async def run_checker(client):
     Background coroutine. Runs immediately on startup, then every CHECK_INTERVAL_HOURS.
     Checks all active series for new episodes.
     """
-    logger.info("🔁 Dorama checker started.")
+    logger.info("🔁 Anime checker started.")
 
     while True:
-        logger.info("⏰ Dorama check cycle running...")
+        logger.info("⏰ Anime check cycle running...")
         try:
             db.deactivate_expired()
             active = db.get_active_series()
 
             if not active:
-                logger.info("No active dorama series to check.")
+                logger.info("No active anime titles to check.")
             else:
                 logger.info(f"Checking {len(active)} active series...")
                 results = await asyncio.gather(
