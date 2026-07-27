@@ -662,13 +662,31 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
             f"  S{s['last_season']:02d}E{s['last_episode']:02d} | додано {started}\n\n"
         )
         buttons.append([
-            InlineKeyboardButton(f"⏹ {display}", callback_data=f"anime_stop_{s['id']}")
+            InlineKeyboardButton(f"⏹ {display}", callback_data=f"anime_stopask_{s['id']}")
         ])
     return text, InlineKeyboardMarkup(buttons)
 
 
-@app.on_callback_query(auth_filter & filters.regex("^anime_stop_"))
-async def anime_stop_callback(client: Client, query: CallbackQuery):
+@app.on_callback_query(auth_filter & filters.regex("^anime_stopask_"))
+async def anime_stopask_callback(client: Client, query: CallbackQuery):
+    """First tap on ⏹ — ask for confirmation instead of stopping immediately,
+    since a stray tap would otherwise silently unsubscribe/unfile a channel."""
+    series_id = int(query.data.split("_")[-1])
+    series = anime_db.get_series_by_id(series_id)
+    title = anime_db.resolve_display_title(series) if series else f"#{series_id}"
+    await query.answer()
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Так, зупинити", callback_data=f"anime_stopyes_{series_id}"),
+        InlineKeyboardButton("❌ Скасувати", callback_data=f"anime_stopcancel_{series_id}"),
+    ]])
+    try:
+        await query.message.edit_text(f"Зупинити відстеження **{title}**?", reply_markup=kb)
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_stopyes_"))
+async def anime_stopyes_callback(client: Client, query: CallbackQuery):
     series_id = int(query.data.split("_")[-1])
     series = anime_db.get_series_by_id(series_id)
     title = anime_db.resolve_display_title(series) if series else f"#{series_id}"
@@ -686,6 +704,20 @@ async def anime_stop_callback(client: Client, query: CallbackQuery):
             logger.warning(f"cleanup() on manual stop failed: {e}")
 
     # Refresh the list in-place (same category the stopped title belonged to)
+    text, kb = _tracking_list_content(category)
+    try:
+        await query.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_stopcancel_"))
+async def anime_stopcancel_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    series = anime_db.get_series_by_id(series_id)
+    category = series["category"] if series else "anime"
+    await query.answer("Скасовано")
+
     text, kb = _tracking_list_content(category)
     try:
         await query.message.edit_text(text, reply_markup=kb)
