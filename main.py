@@ -474,6 +474,16 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
         )
 
 
+# Channel posts announcing a new episode are often a poster PHOTO with a
+# caption (no video attached at all — the actual video is elsewhere/in the
+# linked topic) — check the caption for a "watch all episodes" archive link
+# the same way a forwarded video's caption is checked. Nothing to download
+# here, this handler exists purely for the tracking-link check.
+@app.on_message(auth_filter & filters.photo)
+async def photo_handler(client: Client, message: Message):
+    await _maybe_track_from_caption(client, message)
+
+
 # --- Normal Mode Handler ---
 
 @app.on_message(auth_filter & (filters.video | filters.document))
