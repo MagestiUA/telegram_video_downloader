@@ -41,3 +41,4 @@ README.zip
 # Debug/test scripts (local only)
 debug_models.py
 test_gemini_response.py
+inspect_message.py
