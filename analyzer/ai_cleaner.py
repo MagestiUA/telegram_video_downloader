@@ -136,6 +136,25 @@ If no episode number found, return {"episode": null}.
 No markdown, no extra text.
 """
 
+WATCH_LINK_SYSTEM_PROMPT = """
+You are given the raw text of a Telegram channel post announcing a new anime episode.
+
+Your task: find the link to WATCH THE EPISODE ONLINE WITH VOICEOVER/DUB inside
+Telegram (usually a t.me link, often labeled something like "Онлайн в телеграмі",
+"Дивитись онлайн", "Watch online", "Watch here", or similar — but the exact
+wording varies between channels).
+
+IGNORE and never return links for:
+- Donations / support (Patreon, Buymeacoffee, Privat24, MonoBank, USDT / crypto wallets)
+- Direct file downloads (fex.net or any other file-hosting service)
+- Unrelated Telegram channel/chat/subscribe links
+- Social media, credits, or any other purpose
+
+Return ONLY valid JSON: {"url": "<the watch-online link>"}
+If no such link is found, return {"url": null}.
+No markdown, no extra text.
+"""
+
 async def _chat_json(messages: list[dict], retries: int = 2) -> dict | None:
     """
     Call DeepSeek in JSON mode and return the parsed object.
@@ -210,4 +229,27 @@ async def extract_metadata(text: str) -> dict | None:
         return data
     except Exception as e:
         logger.error(f"Error calling DeepSeek API: {e}")
+        return None
+
+
+async def extract_watch_link(text: str) -> str | None:
+    """
+    Uses DeepSeek to find a "watch online with dub" Telegram link inside an
+    arbitrary channel post, distinguishing it from donation/download/unrelated
+    links by context — channel post formats vary too much for a fixed regex
+    to reliably tell them apart.
+    """
+    try:
+        data = await _chat_json(
+            [
+                {"role": "system", "content": WATCH_LINK_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+        )
+        if not data:
+            return None
+        url = data.get("url")
+        return url.strip() if isinstance(url, str) and url.strip() else None
+    except Exception as e:
+        logger.error(f"Error extracting watch link: {e}")
         return None

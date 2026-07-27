@@ -9,7 +9,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from pyrogram.errors import FloodWait
 from config.config import settings
 from analyzer.mapper import mapper
-from analyzer.ai_cleaner import extract_metadata, extract_episode
+from analyzer.ai_cleaner import extract_metadata, extract_episode, extract_watch_link
 from core.queue_manager import queue_manager
 from core.renamer import sanitize_title, scan_existing_episodes
 from urllib.parse import quote
@@ -298,11 +298,24 @@ async def text_handler(client: Client, message: Message):
             future.set_result(message.text)
         return
 
+    text = message.text or ""
+
     # Bare t.me link (no /anime prefix) → auto-add to anime tracking
-    m = TG_LINK_RE.search(message.text or "")
+    m = TG_LINK_RE.search(text)
     if m:
         await _track_anime_url(client, message, m.group(0))
         return
+
+    # Fallback: no plain t.me link found, but this might be a forwarded/pasted
+    # channel post whose "watch online" link is phrased differently than
+    # expected, or buried among donation/download links — channel formats vary
+    # too much for a fixed regex, so ask DeepSeek to find it by context.
+    # Guarded by a length check so short chit-chat doesn't burn API calls.
+    if len(text) >= 60:
+        url = await extract_watch_link(text)
+        if url:
+            await _track_anime_url(client, message, url)
+            return
 
 
 # --- Shared Utilities ---
