@@ -36,6 +36,13 @@ def init_db():
                 episode       INTEGER NOT NULL,
                 downloaded_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS caption_cache (
+                chat        TEXT    NOT NULL,
+                message_id  INTEGER NOT NULL,
+                season      INTEGER NOT NULL,
+                episode     INTEGER NOT NULL,
+                PRIMARY KEY (chat, message_id)
+            );
         """)
         # Migration: `category` distinguishes dorama (-> DORAMA_PATH) from
         # anime (-> DOWNLOAD_PATH) tracking. Older DBs predate this column.
@@ -157,6 +164,32 @@ def seed_downloaded_episodes(series_id: int, episodes: set[tuple[int, int]]):
         conn.execute(
             "UPDATE series SET last_season = ?, last_episode = ? WHERE id = ?",
             (max_season, max_episode, series_id)
+        )
+
+
+def get_cached_caption(chat: str, message_id: int) -> tuple[int, int] | None:
+    """
+    Return the (season, episode) previously resolved for this exact Telegram
+    message, if any. A message's caption never changes after posting, so once
+    resolved via DeepSeek it never needs re-resolving on later check cycles —
+    avoids burning an API call (and rate-limit budget) re-parsing the same
+    16+ old episodes of a topic on every 6-hour check.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT season, episode FROM caption_cache WHERE chat = ? AND message_id = ?",
+            (chat, message_id)
+        ).fetchone()
+    return (row["season"], row["episode"]) if row else None
+
+
+def cache_caption(chat: str, message_id: int, season: int, episode: int):
+    """Persist a resolved (season, episode) for a message so it's never re-parsed."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO caption_cache (chat, message_id, season, episode) "
+            "VALUES (?, ?, ?, ?)",
+            (chat, message_id, season, episode)
         )
 
 

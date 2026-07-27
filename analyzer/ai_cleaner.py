@@ -255,16 +255,21 @@ async def extract_watch_link(text: str, hyperlinks: list[tuple[str, str]] | None
             links_block = "\n".join(f'- "{label}" -> {url}' for label, url in hyperlinks)
             user_content = f"POST TEXT:\n{text}\n\nHYPERLINKS FOUND IN THE POST:\n{links_block}"
 
+        logger.info(
+            f"[watch-link] checking post (text_len={len(text)}, "
+            f"hyperlinks={[label for label, _ in (hyperlinks or [])]})"
+        )
         data = await _chat_json(
             [
                 {"role": "system", "content": WATCH_LINK_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
         )
+        logger.info(f"[watch-link] DeepSeek result: {data}")
         if not data:
             return None
         url = data.get("url")
         return url.strip() if isinstance(url, str) and url.strip() else None
     except Exception as e:
-        logger.error(f"Error extracting watch link: {e}")
+        logger.error(f"[watch-link] Error extracting watch link: {e}")
         return None

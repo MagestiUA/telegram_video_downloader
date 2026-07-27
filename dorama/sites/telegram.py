@@ -3,6 +3,7 @@ import os
 import re
 import time
 
+from dorama import db as dorama_db
 from dorama.sites.base import BaseSiteHandler
 from dorama.userbot import get_userbot_client
 from analyzer.ai_cleaner import extract_metadata
@@ -69,18 +70,39 @@ class TelegramHandler(BaseSiteHandler):
     async def list_episodes(self, url: str) -> list[dict]:
         chat, anchor_id = self._parse(url)
         episodes: list[dict] = []
+        cache_hits = 0
+        cache_misses = 0
         async for msg in self._iter_video_replies(chat, anchor_id):
             caption = msg.caption or msg.text or ""
-            data = await extract_metadata(caption)
-            if not data or data.get("episode") is None:
-                logger.warning(f"Could not parse episode from caption: {caption[:60]!r}")
-                continue
+
+            # A message's caption never changes after posting — once resolved,
+            # never re-run DeepSeek on it again. This is what previously made
+            # every 6-hour check cycle burn one API call PER EPISODE PER
+            # SERIES, forever, even for episodes downloaded months ago.
+            cached = dorama_db.get_cached_caption(chat, msg.id)
+            if cached:
+                cache_hits += 1
+                season, episode = cached
+            else:
+                cache_misses += 1
+                data = await extract_metadata(caption)
+                if not data or data.get("episode") is None:
+                    logger.warning(f"Could not parse episode from caption: {caption[:60]!r}")
+                    continue
+                season = data.get("season", 1)
+                episode = data["episode"]
+                dorama_db.cache_caption(chat, msg.id, season, episode)
+
             episodes.append({
-                "season": data.get("season", 1),
-                "episode": data["episode"],
+                "season": season,
+                "episode": episode,
                 "source": f"{chat}:{msg.id}",
                 "is_finale": _is_finale(caption),
             })
+        logger.info(
+            f"list_episodes({chat}): {len(episodes)} messages, "
+            f"{cache_hits} from cache, {cache_misses} newly resolved via DeepSeek."
+        )
         return episodes
 
     async def download(self, source: str, title: str, season: int, episode: int,

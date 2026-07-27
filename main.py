@@ -752,11 +752,18 @@ async def _find_watch_link(message: Message) -> str | None:
 
     m = TG_LINK_RE.search(text)
     if m:
+        logger.info(f"[watch-link] regex hit: {m.group(0)!r}")
         return m.group(0)
 
     hyperlinks = _extract_link_entities(message)
+    logger.info(
+        f"[watch-link] no plain link in text (len={len(text)}), "
+        f"{len(hyperlinks)} hyperlink entities found: "
+        f"{[label for label, _ in hyperlinks]}"
+    )
     if hyperlinks or len(text) >= 60:
         return await extract_watch_link(text, hyperlinks=hyperlinks or None)
+    logger.info("[watch-link] text too short and no hyperlinks — skipping DeepSeek call.")
     return None
 
 
