@@ -762,7 +762,9 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     except Exception:
         pass
 
-    asyncio.create_task(dorama_checker.process_series(series_row, client))
+    asyncio.create_task(
+        dorama_checker.process_series(series_row, client, initial_status_msg=status)
+    )
 
 
 @app.on_message(auth_filter & filters.command("anime"))

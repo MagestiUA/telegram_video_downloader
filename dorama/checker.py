@@ -10,10 +10,15 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL_HOURS = 6
 
 
-async def process_series(series: db.sqlite3.Row, client) -> bool:
+async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
     """
     Check and download all new (not yet downloaded) episodes for one series.
     Returns True if at least one episode was downloaded.
+
+    `initial_status_msg` — optional Message to finalize with the check result
+    (used only for the immediate check triggered right after adding a title,
+    so the "⏳ Перевіряю доступні серії..." status doesn't hang forever if
+    there turn out to be no new episodes).
     """
     series_id = series["id"]
     chat_id   = series["chat_id"]
@@ -22,15 +27,24 @@ async def process_series(series: db.sqlite3.Row, client) -> bool:
     category  = series["category"]
     dest_path = settings.DOWNLOAD_PATH if category == "anime" else settings.DORAMA_PATH
 
+    async def _finalize_status(text: str):
+        if initial_status_msg:
+            try:
+                await initial_status_msg.edit_text(text)
+            except Exception:
+                pass
+
     handler = get_handler(url)
     if not handler:
         logger.error(f"No handler for url: {url}")
+        await _finalize_status(f"❌ **{title}**: джерело не підтримується.")
         return False
 
     # Fetch all currently available DUB episodes
     available = await handler.list_episodes(url)
     if not available:
         logger.info(f"[{title}] немає доступних дубльованих епізодів.")
+        await _finalize_status(f"⚠️ **{title}**: серій ще не знайдено.")
         return False
 
     done = db.get_downloaded_set(series_id)
@@ -41,9 +55,15 @@ async def process_series(series: db.sqlite3.Row, client) -> bool:
 
     if not new_eps:
         logger.info(f"[{title}] нових епізодів немає ({len(available)} вже завантажено).")
+        await _finalize_status(
+            f"✅ **{title}**: усі доступні серії вже завантажені ({len(available)})."
+        )
         return False
 
     logger.info(f"[{title}] знайдено {len(new_eps)} нових епізодів.")
+    await _finalize_status(
+        f"✅ **{title}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
+    )
     downloaded_any = False
 
     for ep in new_eps:
