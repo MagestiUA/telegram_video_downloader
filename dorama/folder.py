@@ -1,10 +1,33 @@
 import logging
 
+from pyrogram import raw
 from pyrogram.errors import UserAlreadyParticipant
 
 logger = logging.getLogger(__name__)
 
 ANIME_FOLDER_TITLE = "Аніме Тайтли"
+
+# Telegram's convention for "muted indefinitely" (max signed int32).
+_MUTE_FOREVER = 2 ** 31 - 1
+
+
+async def mute_chat(client, chat_id: int):
+    """
+    Mute a chat's notifications indefinitely. The userbot runs on the user's
+    own personal account (not a separate bot number), so every auto-joined
+    channel would otherwise push real notifications to their phone.
+    """
+    try:
+        peer = await client.resolve_peer(chat_id)
+        await client.invoke(
+            raw.functions.account.UpdateNotifySettings(
+                peer=raw.types.InputNotifyPeer(peer=peer),
+                settings=raw.types.InputPeerNotifySettings(mute_until=_MUTE_FOREVER)
+            )
+        )
+        logger.info(f"Muted notifications for chat {chat_id}.")
+    except Exception as e:
+        logger.warning(f"Could not mute chat {chat_id}: {e}")
 
 
 async def add_chat_to_anime_folder(client, chat_id: int) -> bool:
@@ -59,6 +82,7 @@ async def join_and_file(client, invite_or_username: str) -> int | None:
         logger.error(f"join_chat({invite_or_username}) failed: {e}")
         return None
 
+    await mute_chat(client, chat.id)
     await add_chat_to_anime_folder(client, chat.id)
     return chat.id
 
