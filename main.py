@@ -820,9 +820,13 @@ async def _track_anime_url(client: Client, message: Message, url: str):
         if mapped_title:
             title = mapped_title  # known title — zero friction
         else:
+            search_query = quote(raw_title)
+            anitube_url = f"https://anitube.in.ua/index.php?do=search&subaction=search&story={search_query}"
+            google_url  = f"https://www.google.com/search?q={search_query}+anime"
             title = await ask_user_fresh(
                 chat_id,
-                f"⚠️ Невідомий тайтл: `{raw_title}`\n\n"
+                f"⚠️ Невідомий тайтл: `{raw_title}`\n"
+                f"🔎 [Anitube]({anitube_url}) | [Google]({google_url})\n\n"
                 f"Введіть **офіційну Romaji назву** для збереження _(або `cancel`)_:"
             )
             if not title:
