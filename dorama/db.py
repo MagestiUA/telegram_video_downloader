@@ -117,6 +117,35 @@ def record_episode(series_id: int, season: int, episode: int):
         )
 
 
+def seed_downloaded_episodes(series_id: int, episodes: set[tuple[int, int]]):
+    """
+    Mark episodes as already downloaded WITHOUT this being a fresh download —
+    used to import files found on disk before tracking started (e.g. earlier
+    manual Normal/Batch mode downloads), so the checker won't re-fetch them.
+    Skips episodes already recorded; updates last_season/last_episode to the
+    highest (season, episode) found.
+    """
+    if not episodes:
+        return
+    with _connect() as conn:
+        already = {
+            (r["season"], r["episode"])
+            for r in conn.execute(
+                "SELECT season, episode FROM episodes WHERE series_id = ?", (series_id,)
+            ).fetchall()
+        }
+        for season, episode in episodes - already:
+            conn.execute(
+                "INSERT INTO episodes (series_id, season, episode) VALUES (?, ?, ?)",
+                (series_id, season, episode)
+            )
+        max_season, max_episode = max(episodes)
+        conn.execute(
+            "UPDATE series SET last_season = ?, last_episode = ? WHERE id = ?",
+            (max_season, max_episode, series_id)
+        )
+
+
 def deactivate_expired():
     """Deactivate series older than MAX_AGE_DAYS."""
     cutoff = _cutoff_date()

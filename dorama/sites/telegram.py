@@ -7,6 +7,7 @@ from dorama.sites.base import BaseSiteHandler
 from dorama.userbot import get_userbot_client
 from analyzer.ai_cleaner import extract_metadata
 from core.downloader import progress_bar
+from core.renamer import sanitize_title
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +103,7 @@ class TelegramHandler(BaseSiteHandler):
                 logger.error(f"No media on message {source}")
                 return False
 
-            safe = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
-            # Safety net: even the mapper-resolved official title could in theory be
-            # very long; clamp so folder+file names stay well under typical
-            # filesystem NAME_MAX (255 bytes — Cyrillic is 2 bytes/char in UTF-8).
-            safe = safe[:120].rstrip()
+            safe = sanitize_title(title)
             out_dir = os.path.join(path, safe)
             os.makedirs(out_dir, exist_ok=True)
 

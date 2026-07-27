@@ -1,8 +1,45 @@
 import os
+import re
 import logging
 from config.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Matches the "... - SxxExx.ext" suffix this project always generates
+# (see generate_filename below), regardless of the title portion.
+_EPISODE_FILE_RE = re.compile(r' - S(\d+)E(\d+)\.', re.IGNORECASE)
+
+
+def sanitize_title(title: str, max_len: int = 120) -> str:
+    """
+    Sanitize a title for use as a filesystem folder/file name component.
+    Clamped to max_len to stay well under typical filesystem NAME_MAX limits —
+    multi-byte scripts (Cyrillic, etc.) use 2+ bytes per character in UTF-8,
+    so a long localized title can silently blow past a 255-byte limit.
+    """
+    safe = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
+    return safe[:max_len].rstrip()
+
+
+def scan_existing_episodes(folder_path: str) -> set[tuple[int, int]]:
+    """
+    Scan a folder for files matching the "... - SxxExx.ext" naming convention
+    and return the set of (season, episode) tuples already present on disk.
+
+    Used so a title added to auto-tracking doesn't re-download episodes that
+    were already fetched manually (e.g. via Normal/Batch mode) before tracking
+    started — the folder is title-specific, so any SxxExx match inside it
+    belongs to this title regardless of the exact title text in the filename.
+    """
+    found: set[tuple[int, int]] = set()
+    if not os.path.isdir(folder_path):
+        return found
+    for entry in os.listdir(folder_path):
+        m = _EPISODE_FILE_RE.search(entry)
+        if m:
+            found.add((int(m.group(1)), int(m.group(2))))
+    return found
+
 
 def generate_filename(canonical_name: str, season: int, episode: int, original_ext: str = ".mp4") -> str:
     """

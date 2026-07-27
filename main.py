@@ -11,6 +11,7 @@ from config.config import settings
 from analyzer.mapper import mapper
 from analyzer.ai_cleaner import extract_metadata, extract_episode
 from core.queue_manager import queue_manager
+from core.renamer import sanitize_title, scan_existing_episodes
 from urllib.parse import quote
 from dorama import db as dorama_db, checker as dorama_checker
 from dorama.sites import get_handler as get_site_handler, supported_domains
@@ -461,7 +462,7 @@ async def handle_batch_video(client: Client, message: Message, status_msg: Messa
                 return
             episode = int(episode_str)
 
-        safe_title = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
+        safe_title = sanitize_title(title)
         metadata = {
             "canonical_name": safe_title,
             "season":  season,
@@ -593,7 +594,7 @@ async def video_handler(client: Client, message: Message):
             except Exception: pass
 
     # Step D: Queue download
-    safe_canonical_name = "".join(c for c in final_title if c.isalnum() or c in " .()_-").strip()
+    safe_canonical_name = sanitize_title(final_title)
     metadata = {
         "canonical_name": safe_canonical_name,
         "season":         ai_data.get('season', 1),
@@ -736,9 +737,26 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     series_id = dorama_db.add_series(chat_id, title, url, category="anime")
     series_row = dorama_db.get_series_by_id(series_id)
 
+    # Pre-seed episodes already present on disk (e.g. from earlier manual
+    # Normal/Batch downloads of this same anime) so the checker doesn't
+    # re-download from scratch — a plain filename scan, no AI needed since
+    # the naming convention ("... - SxxExx.ext") is fixed and unambiguous.
+    existing_folder = os.path.join(settings.DOWNLOAD_PATH, sanitize_title(title))
+    existing_episodes = scan_existing_episodes(existing_folder)
+    if existing_episodes:
+        dorama_db.seed_downloaded_episodes(series_id, existing_episodes)
+        logger.info(
+            f"[{title}] знайдено {len(existing_episodes)} вже наявних серій на диску."
+        )
+
     try:
+        skip_note = (
+            f"📁 Знайдено {len(existing_episodes)} вже наявних серій — пропускаю їх.\n"
+            if existing_episodes else ""
+        )
         await status.edit_text(
             f"✅ Додано до відстеження: **{title}**\n"
+            f"{skip_note}"
             f"⏳ Перевіряю доступні серії..."
         )
     except Exception:
