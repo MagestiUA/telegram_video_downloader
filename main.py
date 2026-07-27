@@ -281,7 +281,7 @@ async def mode_callback(client: Client, query: CallbackQuery):
 
     elif query.data == "mode_anime_list":
         await query.answer()
-        text, kb = _tracking_list_content(chat_id, "anime")
+        text, kb = _tracking_list_content("anime")
         try:
             await query.message.reply_text(text, reply_markup=kb)
         except Exception:
@@ -628,10 +628,14 @@ _CATEGORY_HINTS = {
 }
 
 
-def _tracking_list_content(chat_id: int, category: str) -> tuple[str, InlineKeyboardMarkup | None]:
-    """Build message text + keyboard for the anime tracking list."""
+def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | None]:
+    """
+    Build message text + keyboard for the shared anime tracking list — every
+    authorized user tracks the same pool of titles (and gets notified of every
+    download), so the list is shared too, not scoped to whoever added a title.
+    """
     label = _CATEGORY_LABELS.get(category, category.capitalize())
-    series_list = dorama_db.get_series_by_chat(chat_id, category=category)
+    series_list = dorama_db.get_all_active_series(category)
     if not series_list:
         return (
             f"📋 **{label} / відстеження**\n\n"
@@ -664,7 +668,7 @@ async def dorama_stop_callback(client: Client, query: CallbackQuery):
     await query.answer(f"⏹ Зупинено: {title}")
 
     # Refresh the list in-place (same category the stopped title belonged to)
-    text, kb = _tracking_list_content(query.message.chat.id, category)
+    text, kb = _tracking_list_content(category)
     try:
         await query.message.edit_text(text, reply_markup=kb)
     except Exception:
@@ -839,7 +843,7 @@ async def anime_command(client: Client, message: Message):
         return
 
     if not arg or arg == "list":
-        text, kb = _tracking_list_content(message.chat.id, "anime")
+        text, kb = _tracking_list_content("anime")
         await message.reply_text(text, reply_markup=kb)
         return
 

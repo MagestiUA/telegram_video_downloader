@@ -99,6 +99,20 @@ def get_series_by_chat(chat_id: int, category: str | None = None) -> list[sqlite
         ).fetchall()
 
 
+def get_all_active_series(category: str) -> list[sqlite3.Row]:
+    """
+    All active series of a category, regardless of who added them (chat_id).
+    Used for the shared /anime list — every authorized user tracks the same
+    pool of titles and gets notified of every download, so the list and the
+    ability to stop a title must be shared too, not scoped to whoever added it.
+    """
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM series WHERE category = ? AND active = 1 ORDER BY id DESC",
+            (category,)
+        ).fetchall()
+
+
 def stop_series(series_id: int):
     with _connect() as conn:
         conn.execute("UPDATE series SET active = 0 WHERE id = ?", (series_id,))
