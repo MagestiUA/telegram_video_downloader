@@ -14,10 +14,13 @@ services:
       - BOT_TOKEN=
       - DEEPSEEK_API_KEY=
       - DOWNLOAD_PATH=/data/downloads
+      - DORAMA_PATH=/data/dorama
       - ALLOWED_USERS=
       - SESSION_STRING=
+      - USERBOT_SESSION_STRING=
     volumes:
       - /path/to/your/anime:/data/downloads
+      - /path/to/your/dorama:/data/dorama
       - /DATA/AppData/tg-video-downloader/sessions:/app/sessions
     x-casaos:
       envs:
@@ -39,10 +42,16 @@ services:
         - container: SESSION_STRING
           description:
             en_us: "Pyrogram session string — required for Docker (avoids interactive login)"
+        - container: USERBOT_SESSION_STRING
+          description:
+            en_us: "Userbot (personal account) session string — required for /anime tracking of Telegram channels the bot account can't read"
       volumes:
         - container: /data/downloads
           description:
             en_us: "Folder where downloaded videos will be saved"
+        - container: /data/dorama
+          description:
+            en_us: "Folder for dorama/series downloads (currently unused, reserved)"
         - container: /app/sessions
           description:
             en_us: "Pyrogram session storage (AppData)"

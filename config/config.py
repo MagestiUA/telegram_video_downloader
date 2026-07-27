@@ -17,8 +17,12 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str
     GEMINI_API_KEY: str | None = None  # legacy, no longer used
 
-    # Session String (for Docker)
+    # Session String (for Docker) — used by the main bot Client
     SESSION_STRING: str | None = None
+
+    # Userbot session — separate account used to read channels/topics the bot
+    # itself can't access (Telegram Bot API has no chat-history endpoints)
+    USERBOT_SESSION_STRING: str | None = None
 
     # Access Control
     ALLOWED_USERS: str | None = None # Comma-separated IDs

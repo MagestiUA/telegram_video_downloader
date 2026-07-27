@@ -37,19 +37,25 @@ def init_db():
                 downloaded_at TEXT    NOT NULL DEFAULT (datetime('now'))
             );
         """)
+        # Migration: `category` distinguishes dorama (-> DORAMA_PATH) from
+        # anime (-> DOWNLOAD_PATH) tracking. Older DBs predate this column.
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(series)").fetchall()}
+        if "category" not in cols:
+            conn.execute("ALTER TABLE series ADD COLUMN category TEXT NOT NULL DEFAULT 'dorama'")
     logger.info("Dorama DB initialized.")
 
 
-def add_series(chat_id: int, title: str, url: str) -> int:
+def add_series(chat_id: int, title: str, url: str, category: str = "dorama") -> int:
     """
-    Add a new series to track.
-    `url` — the page used to list available episodes (per-episode or serial root).
+    Add a new series/title to track.
+    `url` — the page used to list available episodes (per-episode/serial root/TG topic).
+    `category` — "dorama" (-> DORAMA_PATH) or "anime" (-> DOWNLOAD_PATH).
     Stored in the base_url column. Episode tracking is driven by the `episodes` table.
     """
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO series (chat_id, title, base_url) VALUES (?, ?, ?)",
-            (chat_id, title, url)
+            "INSERT INTO series (chat_id, title, base_url, category) VALUES (?, ?, ?, ?)",
+            (chat_id, title, url, category)
         )
         return cur.lastrowid
 
@@ -79,11 +85,17 @@ def get_active_series() -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def get_series_by_chat(chat_id: int) -> list[sqlite3.Row]:
+def get_series_by_chat(chat_id: int, category: str | None = None) -> list[sqlite3.Row]:
+    """If `category` is given, only return series of that category (dorama/anime)."""
     with _connect() as conn:
+        if category is None:
+            return conn.execute(
+                "SELECT * FROM series WHERE chat_id = ? AND active = 1 ORDER BY id DESC",
+                (chat_id,)
+            ).fetchall()
         return conn.execute(
-            "SELECT * FROM series WHERE chat_id = ? AND active = 1 ORDER BY id DESC",
-            (chat_id,)
+            "SELECT * FROM series WHERE chat_id = ? AND category = ? AND active = 1 ORDER BY id DESC",
+            (chat_id, category)
         ).fetchall()
 
 

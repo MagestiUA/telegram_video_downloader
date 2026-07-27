@@ -4,6 +4,44 @@ All notable changes are documented here.
 
 ---
 
+## [2026-07-05] - Anime auto-tracking via Telegram links (`/anime`)
+
+### Added
+- **`/anime {url}`** — tracks a Telegram forum-topic (e.g. an anime "media library"
+  channel where each topic is a title and every reply is one episode video).
+  Added immediately, no confirm/rename friction — only asks for a title if it
+  genuinely can't be auto-detected from the first episode's caption.
+- **`/anime list`** — active titles with **⏹** stop buttons; **`/anime help`** — docs.
+- **🎬 Anime button** next to Normal/Batch in `/help`, `/mode`, and every mode
+  keyboard state — opens the same tracking list as `/anime list`.
+- **Second Pyrogram client (userbot)** — `dorama/userbot.py`, authenticated with
+  `USERBOT_SESSION_STRING` (a personal account's session). Required because the
+  Bot API has no chat-history endpoints; only a user account can read a
+  channel/topic's message history (`get_discussion_replies`).
+- **`dorama/sites/telegram.py`** — `TelegramHandler`: resolves a `t.me/{channel}/{msg_id}`
+  topic link, lists all video replies, and extracts season/episode from each
+  caption by reusing the existing DeepSeek `extract_metadata` pipeline.
+- **Finale auto-stop** — detects a `"N з N"` pattern in the caption (current
+  episode == total, e.g. `"[12 з 12]"`) via regex and automatically stops
+  tracking that title once the last episode downloads. Placeholder totals like
+  `"04 з XX"` never match, since the regex requires real digits.
+- Every successful download notifies **all authorized users**, not just the
+  one who added the title (reuses the existing dorama-checker mechanism).
+- `series` table gained a `category` column (`anime` / `dorama`) so the
+  checker can pick the right destination folder (`DOWNLOAD_PATH` vs `DORAMA_PATH`).
+
+### Removed
+- **`/dorama` command and its uafix.net scraper** — the earlier "Dorama Mode"
+  (K/C-drama tracking via uafix.net) turned out unused in practice and was
+  removed: `dorama/sites/uafix.py`, `dorama_command`, `DORAMA_HELP`, and the
+  confirm/rename/cancel button flow. The underlying infrastructure (SQLite
+  tracking, 6-hour checker, `BaseSiteHandler` interface, 6-month expiry) is
+  unchanged and now exclusively serves `/anime`. Any pre-existing
+  `category='dorama'` rows on a running instance simply stop progressing
+  (checker logs "no handler" and skips them) — no crash, no cleanup required.
+
+---
+
 ## [2026-07-05] - Detect trailing season number in title
 
 ### Changed

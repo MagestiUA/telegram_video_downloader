@@ -19,6 +19,8 @@ async def process_series(series: db.sqlite3.Row, client) -> bool:
     chat_id   = series["chat_id"]
     title     = series["title"]
     url       = series["base_url"]
+    category  = series["category"]
+    dest_path = settings.DOWNLOAD_PATH if category == "anime" else settings.DORAMA_PATH
 
     handler = get_handler(url)
     if not handler:
@@ -58,27 +60,33 @@ async def process_series(series: db.sqlite3.Row, client) -> bool:
 
         ok = await handler.download(
             source, title, season, episode,
-            settings.DORAMA_PATH, notify_msg=notify_msg
+            dest_path, notify_msg=notify_msg
         )
 
         if ok:
             db.record_episode(series_id, season, episode)
             downloaded_any = True
+            is_finale = ep.get("is_finale", False)
+
+            done_text = (
+                f"✅ Завантажено: **{title}** S{season:02d}E{episode:02d}"
+                + ("\n🏁 Це остання серія — знято з відстеження." if is_finale else "")
+            )
 
             all_users = settings.allowed_users_set or {chat_id}
             for uid in all_users:
                 try:
                     if uid == chat_id and notify_msg:
-                        await notify_msg.edit_text(
-                            f"✅ Завантажено: **{title}** S{season:02d}E{episode:02d}"
-                        )
+                        await notify_msg.edit_text(done_text)
                     else:
-                        await client.send_message(
-                            uid,
-                            f"✅ Завантажено: **{title}** S{season:02d}E{episode:02d}"
-                        )
+                        await client.send_message(uid, done_text)
                 except Exception as e:
                     logger.warning(f"Failed to notify {uid}: {e}")
+
+            if is_finale:
+                db.stop_series(series_id)
+                logger.info(f"[{title}] фінальна серія завантажена — відстеження зупинено.")
+                break
         else:
             try:
                 if notify_msg:
