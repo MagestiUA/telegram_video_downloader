@@ -20,6 +20,20 @@ URL_RE = re.compile(r'^https://t\.me/([A-Za-z0-9_]+)/(\d+)/?$')
 # placeholders like "04 з XX" / "04 з Х" never match (\d+ won't match letters).
 FINALE_RE = re.compile(r'(\d+)\s*(?:з|із|из|of)\s*(\d+)\b', re.IGNORECASE)
 
+# Caption markers that mean "skip this video entirely" — some channels post
+# the SAME episode twice under different labels (e.g. Glass Moon posts both a
+# full "- DUB" version and a smaller "- MINI" duplicate of the same episode).
+# Add more markers here as new channels/cases turn up; case-insensitive
+# substring match against the whole caption/message text.
+IGNORED_CAPTION_MARKERS = [
+    "MINI",  # Glass Moon: smaller/duplicate re-encode of the same episode
+]
+
+
+def _is_ignored_variant(caption: str) -> bool:
+    upper = caption.upper()
+    return any(marker.upper() in upper for marker in IGNORED_CAPTION_MARKERS)
+
 
 def _is_finale(caption: str) -> bool:
     m = FINALE_RE.search(caption)
@@ -74,6 +88,10 @@ class TelegramHandler(BaseSiteHandler):
         cache_misses = 0
         async for msg in self._iter_video_replies(chat, anchor_id):
             caption = str(msg.caption or msg.text or "")
+
+            if _is_ignored_variant(caption):
+                logger.info(f"Skipping ignored variant (matched marker): {caption[:60]!r}")
+                continue
 
             # A message's caption never changes after posting — once resolved,
             # never re-run DeepSeek on it again. This is what previously made
