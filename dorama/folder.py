@@ -1,5 +1,7 @@
 import logging
 
+from pyrogram.errors import UserAlreadyParticipant
+
 logger = logging.getLogger(__name__)
 
 ANIME_FOLDER_TITLE = "Аніме Тайтли"
@@ -39,15 +41,24 @@ async def remove_chat_from_anime_folder(client, chat_id: int):
 async def join_and_file(client, invite_or_username: str) -> int | None:
     """
     Join a channel (invite link or public username) and file it into the
-    anime folder. Returns the joined chat's id, or None on failure.
-    Safe to call on a channel already joined — join_chat then just returns
-    the existing chat.
+    anime folder. Returns the resolved chat's id, or None on failure.
+    Safe to call repeatedly — if already a member, resolves via get_chat()
+    instead of erroring out (Telegram raises UserAlreadyParticipant, which is
+    not a real failure here — the checker re-processes tracked series on
+    every 6-hour cycle, so this path IS hit repeatedly for the same channel).
     """
     try:
         chat = await client.join_chat(invite_or_username)
+    except UserAlreadyParticipant:
+        try:
+            chat = await client.get_chat(invite_or_username)
+        except Exception as e:
+            logger.error(f"get_chat({invite_or_username}) failed after UserAlreadyParticipant: {e}")
+            return None
     except Exception as e:
         logger.error(f"join_chat({invite_or_username}) failed: {e}")
         return None
+
     await add_chat_to_anime_folder(client, chat.id)
     return chat.id
 

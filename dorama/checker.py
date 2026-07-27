@@ -113,6 +113,10 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
 
             if is_finale:
                 db.stop_series(series_id)
+                try:
+                    await handler.cleanup(url)
+                except Exception as e:
+                    logger.warning(f"[{title}] cleanup() after finale failed: {e}")
                 logger.info(f"[{title}] фінальна серія завантажена — відстеження зупинено.")
                 break
         else:

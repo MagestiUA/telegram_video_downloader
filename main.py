@@ -673,6 +673,14 @@ async def dorama_stop_callback(client: Client, query: CallbackQuery):
     dorama_db.stop_series(series_id)
     await query.answer(f"⏹ Зупинено: {title}")
 
+    if series:
+        try:
+            handler = get_site_handler(series["base_url"])
+            if handler:
+                await handler.cleanup(series["base_url"])
+        except Exception as e:
+            logger.warning(f"cleanup() on manual stop failed: {e}")
+
     # Refresh the list in-place (same category the stopped title belonged to)
     text, kb = _tracking_list_content(category)
     try:

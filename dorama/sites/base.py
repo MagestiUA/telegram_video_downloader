@@ -36,3 +36,11 @@ class BaseSiteHandler(ABC):
         notify_msg — optional Pyrogram Message to update with progress.
         Returns True on success.
         """
+
+    async def cleanup(self, url: str) -> None:
+        """
+        Optional hook called when a tracked title stops being tracked (finale
+        reached, or manually stopped) — e.g. to leave a dedicated per-title
+        channel that no longer serves any purpose. Default: no-op.
+        """
+        return None
