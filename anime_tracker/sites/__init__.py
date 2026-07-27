@@ -1,7 +1,7 @@
 from urllib.parse import urlparse
 
-from dorama.sites.base import BaseSiteHandler
-from dorama.sites.telegram import TelegramHandler
+from anime_tracker.sites.base import BaseSiteHandler
+from anime_tracker.sites.telegram import TelegramHandler
 
 # Registry: domain -> handler class
 # To add a new site: create a handler in sites/, add it here.

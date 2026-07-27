@@ -3,10 +3,10 @@ import os
 import re
 import time
 
-from dorama import db as dorama_db
-from dorama.sites.base import BaseSiteHandler
-from dorama.userbot import get_userbot_client
-from dorama.folder import join_and_file, unfile_and_leave
+from anime_tracker import db as anime_db
+from anime_tracker.sites.base import BaseSiteHandler
+from anime_tracker.userbot import get_userbot_client
+from anime_tracker.folder import join_and_file, unfile_and_leave
 from analyzer.ai_cleaner import extract_metadata
 from core.downloader import progress_bar
 from core.renamer import sanitize_title
@@ -113,7 +113,7 @@ class TelegramHandler(BaseSiteHandler):
         # never re-run DeepSeek on it again. This is what previously made
         # every 6-hour check cycle burn one API call PER EPISODE PER SERIES,
         # forever, even for episodes downloaded months ago.
-        cached = dorama_db.get_cached_caption(chat_key, msg.id)
+        cached = anime_db.get_cached_caption(chat_key, msg.id)
         if cached:
             season, episode = cached
             was_cached = True
@@ -124,7 +124,7 @@ class TelegramHandler(BaseSiteHandler):
                 return None, False
             season = data.get("season", 1)
             episode = data["episode"]
-            dorama_db.cache_caption(chat_key, msg.id, season, episode)
+            anime_db.cache_caption(chat_key, msg.id, season, episode)
             was_cached = False
 
         episode_dict = {

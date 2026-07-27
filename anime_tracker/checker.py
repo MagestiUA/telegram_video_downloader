@@ -1,8 +1,8 @@
 import asyncio
 import logging
 
-from dorama import db
-from dorama.sites import get_handler
+from anime_tracker import db
+from anime_tracker.sites import get_handler
 from config.config import settings
 
 logger = logging.getLogger(__name__)

@@ -18,7 +18,7 @@ def build_userbot_client() -> Client | None:
     global _userbot_client
     if not settings.USERBOT_SESSION_STRING:
         logger.warning(
-            "USERBOT_SESSION_STRING not set — Telegram-source dorama tracking disabled."
+            "USERBOT_SESSION_STRING not set — Telegram-source anime tracking disabled."
         )
         return None
     _userbot_client = Client(

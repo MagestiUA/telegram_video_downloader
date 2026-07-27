@@ -14,9 +14,9 @@ from analyzer.ai_cleaner import extract_metadata, extract_episode, extract_watch
 from core.queue_manager import queue_manager
 from core.renamer import sanitize_title, scan_existing_episodes
 from urllib.parse import quote
-from dorama import db as dorama_db, checker as dorama_checker
-from dorama.sites import get_handler as get_site_handler, supported_domains
-from dorama.userbot import build_userbot_client
+from anime_tracker import db as anime_db, checker as anime_checker
+from anime_tracker.sites import get_handler as get_site_handler, supported_domains
+from anime_tracker.userbot import build_userbot_client
 
 # Setup logging
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -641,7 +641,7 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
     download), so the list is shared too, not scoped to whoever added a title.
     """
     label = _CATEGORY_LABELS.get(category, category.capitalize())
-    series_list = dorama_db.get_all_active_series(category)
+    series_list = anime_db.get_all_active_series(category)
     if not series_list:
         return (
             f"📋 **{label} / відстеження**\n\n"
@@ -651,30 +651,30 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
         )
     text = f"📋 **{label} / відстеження:**\n\n"
     buttons = [[
-        InlineKeyboardButton("🔄✅ Перевірити все", callback_data=f"dorama_checkall_{category}")
+        InlineKeyboardButton("🔄✅ Перевірити все", callback_data=f"anime_checkall_{category}")
     ]]
     for s in series_list:
         started = s["started_at"][:10]
-        display = dorama_db.resolve_display_title(s)  # backfills legacy rows via mapper.db reverse lookup
+        display = anime_db.resolve_display_title(s)  # backfills legacy rows via mapper.db reverse lookup
 
         text += (
             f"• **{display}**\n"
             f"  S{s['last_season']:02d}E{s['last_episode']:02d} | додано {started}\n\n"
         )
         buttons.append([
-            InlineKeyboardButton(f"⏹ {display}", callback_data=f"dorama_stop_{s['id']}")
+            InlineKeyboardButton(f"⏹ {display}", callback_data=f"anime_stop_{s['id']}")
         ])
     return text, InlineKeyboardMarkup(buttons)
 
 
-@app.on_callback_query(auth_filter & filters.regex("^dorama_stop_"))
-async def dorama_stop_callback(client: Client, query: CallbackQuery):
+@app.on_callback_query(auth_filter & filters.regex("^anime_stop_"))
+async def anime_stop_callback(client: Client, query: CallbackQuery):
     series_id = int(query.data.split("_")[-1])
-    series = dorama_db.get_series_by_id(series_id)
-    title = dorama_db.resolve_display_title(series) if series else f"#{series_id}"
-    category = series["category"] if series else "dorama"
+    series = anime_db.get_series_by_id(series_id)
+    title = anime_db.resolve_display_title(series) if series else f"#{series_id}"
+    category = series["category"] if series else "anime"
 
-    dorama_db.stop_series(series_id)
+    anime_db.stop_series(series_id)
     await query.answer(f"⏹ Зупинено: {title}")
 
     if series:
@@ -697,7 +697,7 @@ async def _run_checkall(client: Client, series_list: list, status_msg: Message):
     """Run process_series for every title, then finalize the status message."""
     try:
         await asyncio.gather(
-            *[dorama_checker.process_series(s, client) for s in series_list],
+            *[anime_checker.process_series(s, client) for s in series_list],
             return_exceptions=True
         )
     finally:
@@ -707,10 +707,10 @@ async def _run_checkall(client: Client, series_list: list, status_msg: Message):
             pass
 
 
-@app.on_callback_query(auth_filter & filters.regex("^dorama_checkall_"))
-async def dorama_checkall_callback(client: Client, query: CallbackQuery):
-    category = query.data.replace("dorama_checkall_", "", 1)
-    series_list = dorama_db.get_all_active_series(category)
+@app.on_callback_query(auth_filter & filters.regex("^anime_checkall_"))
+async def anime_checkall_callback(client: Client, query: CallbackQuery):
+    category = query.data.replace("anime_checkall_", "", 1)
+    series_list = anime_db.get_all_active_series(category)
     if not series_list:
         await query.answer("Немає активних тайтлів.")
         return
@@ -887,7 +887,7 @@ async def _track_anime_url(client: Client, message: Message, url: str):
 
     # Prevent adding the same title twice (e.g. via two different channels'
     # links for the same anime) — check by the resolved official title.
-    existing_series = dorama_db.find_active_series_by_title(title, category="anime")
+    existing_series = anime_db.find_active_series_by_title(title, category="anime")
     if existing_series:
         try:
             await status.edit_text(
@@ -898,8 +898,8 @@ async def _track_anime_url(client: Client, message: Message, url: str):
         return
 
     display_title = raw_title or title
-    series_id = dorama_db.add_series(chat_id, title, url, category="anime", display_title=display_title)
-    series_row = dorama_db.get_series_by_id(series_id)
+    series_id = anime_db.add_series(chat_id, title, url, category="anime", display_title=display_title)
+    series_row = anime_db.get_series_by_id(series_id)
 
     # Pre-seed episodes already present on disk (e.g. from earlier manual
     # Normal/Batch downloads of this same anime) so the checker doesn't
@@ -908,7 +908,7 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     existing_folder = os.path.join(settings.DOWNLOAD_PATH, sanitize_title(title))
     existing_episodes = scan_existing_episodes(existing_folder)
     if existing_episodes:
-        dorama_db.seed_downloaded_episodes(series_id, existing_episodes)
+        anime_db.seed_downloaded_episodes(series_id, existing_episodes)
         logger.info(
             f"[{title}] знайдено {len(existing_episodes)} вже наявних серій на диску."
         )
@@ -927,7 +927,7 @@ async def _track_anime_url(client: Client, message: Message, url: str):
         pass
 
     asyncio.create_task(
-        dorama_checker.process_series(series_row, client, initial_status_msg=status)
+        anime_checker.process_series(series_row, client, initial_status_msg=status)
     )
 
 
@@ -954,14 +954,14 @@ if __name__ == "__main__":
     logger.info("Bot starting...")
 
     async def main():
-        dorama_db.init_db()
+        anime_db.init_db()
 
         await app.start()
 
         userbot = build_userbot_client()
         if userbot:
             await userbot.start()
-            logger.info("Userbot client started (Telegram-source dorama tracking enabled)")
+            logger.info("Userbot client started (Telegram-source anime tracking enabled)")
 
         await app.set_bot_commands([
             BotCommand("start", "Welcome & your User ID"),
@@ -973,7 +973,7 @@ if __name__ == "__main__":
         logger.info("Bot commands registered")
 
         worker_task  = asyncio.create_task(queue_manager.worker())
-        checker_task = asyncio.create_task(dorama_checker.run_checker(app))
+        checker_task = asyncio.create_task(anime_checker.run_checker(app))
         logger.info("Queue worker started")
         logger.info("Anime checker started")
 

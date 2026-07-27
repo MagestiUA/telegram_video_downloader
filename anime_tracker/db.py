@@ -7,7 +7,7 @@ from analyzer.mapper import mapper
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "sessions/dorama.db"
+DB_PATH = "sessions/anime.db"
 MAX_AGE_DAYS = 182  # ~6 months
 
 
@@ -46,25 +46,27 @@ def init_db():
                 PRIMARY KEY (chat, message_id)
             );
         """)
-        # Migration: `category` distinguishes dorama (-> DORAMA_PATH) from
-        # anime (-> DOWNLOAD_PATH) tracking. Older DBs predate this column.
+        # Migration: `category` exists for legacy rows only (an earlier,
+        # since-removed tracking mode used a different value here). "anime"
+        # is the only category ever created going forward.
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(series)").fetchall()}
         if "category" not in cols:
-            conn.execute("ALTER TABLE series ADD COLUMN category TEXT NOT NULL DEFAULT 'dorama'")
+            conn.execute("ALTER TABLE series ADD COLUMN category TEXT NOT NULL DEFAULT 'anime'")
         # Migration: `display_title` is the localized/raw caption title shown
         # to users (readable), while `title` stays the official Romaji name
         # used for folder/file naming. Older DBs predate this column.
         if "display_title" not in cols:
             conn.execute("ALTER TABLE series ADD COLUMN display_title TEXT")
-    logger.info("Dorama DB initialized.")
+    logger.info("Anime tracking DB initialized.")
 
 
-def add_series(chat_id: int, title: str, url: str, category: str = "dorama",
+def add_series(chat_id: int, title: str, url: str, category: str = "anime",
                display_title: str | None = None) -> int:
     """
     Add a new series/title to track.
     `url` — the page used to list available episodes (per-episode/serial root/TG topic).
-    `category` — "dorama" (-> DORAMA_PATH) or "anime" (-> DOWNLOAD_PATH).
+    `category` — always "anime" for anything created going forward; kept as a
+    column for legacy rows from an earlier, since-removed tracking mode.
     `title` — official Romaji title, used for folder/file naming.
     `display_title` — localized/raw title shown in bot messages (falls back
     to `title` if not given).
@@ -151,7 +153,7 @@ def get_active_series() -> list[sqlite3.Row]:
 
 
 def get_series_by_chat(chat_id: int, category: str | None = None) -> list[sqlite3.Row]:
-    """If `category` is given, only return series of that category (dorama/anime)."""
+    """If `category` is given, only return series of that category."""
     with _connect() as conn:
         if category is None:
             return conn.execute(
@@ -260,7 +262,7 @@ def deactivate_expired():
             (cutoff,)
         ).rowcount
     if n:
-        logger.info(f"Deactivated {n} expired dorama series.")
+        logger.info(f"Deactivated {n} expired anime series.")
 
 
 def _cutoff_date() -> str:
