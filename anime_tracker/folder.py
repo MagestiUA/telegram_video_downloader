@@ -65,11 +65,24 @@ async def join_and_file(client, invite_or_username: str) -> int | None:
     """
     Join a channel (invite link or public username) and file it into the
     anime folder. Returns the resolved chat's id, or None on failure.
-    Safe to call repeatedly — if already a member, resolves via get_chat()
-    instead of erroring out (Telegram raises UserAlreadyParticipant, which is
-    not a real failure here — the checker re-processes tracked series on
-    every 6-hour cycle, so this path IS hit repeatedly for the same channel).
+
+    Safe to call repeatedly — the checker re-processes every tracked series
+    on every 6-hour cycle (and again on a manual "Перевірити все"), so this
+    path is hit repeatedly for the same channel forever, not just once.
+    `join_chat` (messages.ImportChatInvite) is a heavily rate-limited method
+    regardless of membership status, so we try the cheap `get_chat()` first —
+    it resolves an invite link fine for a channel we're already in — and only
+    fall back to an actual join_chat() call when that fails (i.e. we're
+    genuinely not a member yet). This avoids hitting ImportChatInvite once
+    per series on every single check cycle, which previously tripped
+    FLOOD_WAIT once there were more than a couple of tracked private channels.
     """
+    try:
+        chat = await client.get_chat(invite_or_username)
+        return chat.id
+    except Exception:
+        pass  # not resolvable without joining — fall through to join_chat
+
     try:
         chat = await client.join_chat(invite_or_username)
     except UserAlreadyParticipant:

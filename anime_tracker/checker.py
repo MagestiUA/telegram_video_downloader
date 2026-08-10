@@ -151,13 +151,17 @@ async def run_checker(client):
                 logger.info("No active anime titles to check.")
             else:
                 logger.info(f"Checking {len(active)} active series...")
-                results = await asyncio.gather(
-                    *[process_series(s, client) for s in active],
-                    return_exceptions=True
-                )
-                for s, r in zip(active, results):
-                    if isinstance(r, Exception):
-                        logger.error(f"Error processing '{s['title']}': {r}")
+                # Sequential, not parallel: this all runs through ONE userbot
+                # account, and Telegram rate-limits per-account regardless of
+                # how many titles we're checking — firing every series'
+                # API calls at once (join_chat, get_discussion_replies, ...)
+                # concurrently was tripping FLOOD_WAIT once there were more
+                # than a couple of tracked titles.
+                for s in active:
+                    try:
+                        await process_series(s, client)
+                    except Exception as e:
+                        logger.error(f"Error processing '{s['title']}': {e}")
 
         except Exception as e:
             logger.error(f"Checker cycle error: {e}", exc_info=True)

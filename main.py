@@ -726,12 +726,19 @@ async def anime_stopcancel_callback(client: Client, query: CallbackQuery):
 
 
 async def _run_checkall(client: Client, series_list: list, status_msg: Message):
-    """Run process_series for every title, then finalize the status message."""
+    """
+    Run process_series for every title, then finalize the status message.
+    Sequential, not asyncio.gather — this all runs through ONE userbot
+    account, so firing every title's Telegram API calls at once (join_chat,
+    get_discussion_replies, ...) just trips FLOOD_WAIT once there are more
+    than a couple of tracked titles; there's no real parallelism to gain here.
+    """
     try:
-        await asyncio.gather(
-            *[anime_checker.process_series(s, client) for s in series_list],
-            return_exceptions=True
-        )
+        for s in series_list:
+            try:
+                await anime_checker.process_series(s, client)
+            except Exception as e:
+                logger.error(f"checkall: error processing '{s['title']}': {e}")
     finally:
         try:
             await status_msg.edit_text(f"✅ Перевірку завершено ({len(series_list)} тайтлів).")
