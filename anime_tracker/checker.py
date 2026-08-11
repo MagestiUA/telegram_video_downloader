@@ -9,6 +9,15 @@ logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_HOURS = 6
 
+# Pause between titles when checking a batch (background cycle or manual
+# "Перевірити все") — even fully sequential (non-parallel) back-to-back API
+# calls from one account can add up fast enough to trip Telegram's flood
+# control on sensitive methods (join_chat/ImportChatInvite,
+# get_discussion_replies/GetReplies) once there are more than a couple of
+# tracked titles. A few seconds of breathing room between titles is cheap
+# against a 6-hour check interval.
+INTER_SERIES_DELAY_SECONDS = 4
+
 
 async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
     """
@@ -151,17 +160,19 @@ async def run_checker(client):
                 logger.info("No active anime titles to check.")
             else:
                 logger.info(f"Checking {len(active)} active series...")
-                # Sequential, not parallel: this all runs through ONE userbot
-                # account, and Telegram rate-limits per-account regardless of
-                # how many titles we're checking — firing every series'
-                # API calls at once (join_chat, get_discussion_replies, ...)
-                # concurrently was tripping FLOOD_WAIT once there were more
-                # than a couple of tracked titles.
-                for s in active:
+                # Strictly sequential, WITH a pause between titles: this all
+                # runs through ONE userbot account, and Telegram rate-limits
+                # per-account regardless of how many titles we're checking —
+                # firing every series' API calls back-to-back (even
+                # non-concurrently) was still enough to trip FLOOD_WAIT once
+                # there were more than a couple of tracked titles.
+                for i, s in enumerate(active):
                     try:
                         await process_series(s, client)
                     except Exception as e:
                         logger.error(f"Error processing '{s['title']}': {e}")
+                    if i < len(active) - 1:
+                        await asyncio.sleep(INTER_SERIES_DELAY_SECONDS)
 
         except Exception as e:
             logger.error(f"Checker cycle error: {e}", exc_info=True)
