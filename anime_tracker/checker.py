@@ -18,6 +18,13 @@ CHECK_INTERVAL_HOURS = 6
 # against a 6-hour check interval.
 INTER_SERIES_DELAY_SECONDS = 4
 
+# Pause between individual episode downloads within the same series.
+# Each download() opens its own per-DC media session (see anime_tracker/
+# sites/telegram.py) — reopening these back-to-back with zero delay is the
+# suspected trigger for the periodic "Auth key not found" 401 hiccup on the
+# media session. A short breather between downloads is cheap insurance.
+INTER_DOWNLOAD_DELAY_SECONDS = 5
+
 
 async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
     """
@@ -76,8 +83,11 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     )
     downloaded_any = False
 
-    for ep in new_eps:
+    for i, ep in enumerate(new_eps):
         season, episode, source = ep["season"], ep["episode"], ep["source"]
+
+        if i > 0:
+            await asyncio.sleep(INTER_DOWNLOAD_DELAY_SECONDS)
 
         notify_msg = None
         try:
