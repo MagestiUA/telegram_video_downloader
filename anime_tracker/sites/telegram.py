@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -35,6 +36,15 @@ FINALE_RE = re.compile(r'(\d+)\s*(?:з|із|из|of)\s*(\d+)\b', re.IGNORECASE)
 IGNORED_CAPTION_MARKERS = [
     "MINI",  # Glass Moon: smaller/duplicate re-encode of the same episode
 ]
+
+# download_media() occasionally hits a transient "Auth key not found in the
+# system" (401 Unauthorized) on the per-DC media session Pyrogram opens for
+# each download — observed to be a short-lived hiccup (the very next check
+# cycle downloads fine with the SAME session/SESSION_STRING), not an actual
+# session revocation. Retry a couple of times with a pause before giving up
+# on the episode instead of failing the whole batch on one flaky connection.
+DOWNLOAD_RETRY_ATTEMPTS = 3
+DOWNLOAD_RETRY_DELAY_SECONDS = 8
 
 
 def _is_ignored_variant(caption: str) -> bool:
@@ -255,9 +265,27 @@ class TelegramHandler(BaseSiteHandler):
             async def progress(current, total):
                 await progress_bar(current, total, notify_msg, start_time)
 
-            downloaded_path = await client.download_media(
-                message, file_name=target, progress=progress
-            )
+            downloaded_path = None
+            last_error = None
+            for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
+                try:
+                    downloaded_path = await client.download_media(
+                        message, file_name=target, progress=progress
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        f"download_media attempt {attempt}/{DOWNLOAD_RETRY_ATTEMPTS} "
+                        f"failed for {source}: {type(e).__name__}: {e}"
+                    )
+                    if attempt < DOWNLOAD_RETRY_ATTEMPTS:
+                        await asyncio.sleep(DOWNLOAD_RETRY_DELAY_SECONDS)
+
+            if downloaded_path is None:
+                if last_error:
+                    raise last_error
+                return False
             return bool(downloaded_path)
         except Exception as e:
             logger.error(f"Telegram download failed: {e}", exc_info=True)
