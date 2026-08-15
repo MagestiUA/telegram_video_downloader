@@ -14,7 +14,7 @@ from analyzer.ai_cleaner import extract_metadata, extract_episode, extract_watch
 from core.queue_manager import queue_manager
 from core.renamer import sanitize_title, scan_existing_episodes
 from urllib.parse import quote
-from anime_tracker import db as anime_db, checker as anime_checker
+from anime_tracker import db as anime_db, checker as anime_checker, fixer as anime_fixer
 from anime_tracker.sites import get_handler as get_site_handler, supported_domains
 from anime_tracker.userbot import build_userbot_client
 
@@ -647,11 +647,14 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
             f"📋 **{label} / відстеження**\n\n"
             f"Немає активних тайтлів.\n\n"
             f"Щоб додати:\n{_CATEGORY_HINTS.get(category, '')}",
-            None
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔧 Виправити тайтл", callback_data="anime_fixlist")
+            ]])
         )
     text = f"📋 **{label} / відстеження:**\n\n"
     buttons = [[
-        InlineKeyboardButton("🔄✅ Перевірити все", callback_data=f"anime_checkall_{category}")
+        InlineKeyboardButton("🔄✅ Перевірити все", callback_data=f"anime_checkall_{category}"),
+        InlineKeyboardButton("🔧 Виправити тайтл", callback_data="anime_fixlist"),
     ]]
     for s in series_list:
         started = s["started_at"][:10]
@@ -723,6 +726,171 @@ async def anime_stopcancel_callback(client: Client, query: CallbackQuery):
         await query.message.edit_text(text, reply_markup=kb)
     except Exception:
         pass
+
+
+# ── ANIME MODE: "Виправити тайтл" — manually delete/redownload a specific
+# already-downloaded episode. Needed for cases where the source channel
+# posts the wrong variant first (e.g. subtitles-only) then later replaces it
+# with the correct one (e.g. the dub) — the bot has already marked that
+# episode downloaded and won't revisit it on its own. ──────────────────────
+
+def _fix_series_label(s) -> str:
+    status = "🟢" if s["active"] else "⏹"
+    return f"{status} {anime_db.resolve_display_title(s)}"
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixlist$"))
+async def anime_fixlist_callback(client: Client, query: CallbackQuery):
+    series_list = anime_db.get_recent_series()
+    await query.answer()
+    if not series_list:
+        try:
+            await query.message.edit_text(
+                "🔧 Немає тайтлів за останні ~6 місяців.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅ Назад", callback_data="anime_fixback")
+                ]])
+            )
+        except Exception:
+            pass
+        return
+
+    buttons = [
+        [InlineKeyboardButton(_fix_series_label(s), callback_data=f"anime_fixsel_{s['id']}")]
+        for s in series_list
+    ]
+    buttons.append([InlineKeyboardButton("⬅ Назад", callback_data="anime_fixback")])
+    try:
+        await query.message.edit_text(
+            "🔧 **Виправити тайтл** — обери, з яким є проблема:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixback$"))
+async def anime_fixback_callback(client: Client, query: CallbackQuery):
+    await query.answer()
+    text, kb = _tracking_list_content("anime")
+    try:
+        await query.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+
+
+async def _show_fix_episodes(query: CallbackQuery, series_id: int):
+    series = anime_db.get_series_by_id(series_id)
+    if not series:
+        try:
+            await query.message.edit_text("Тайтл не знайдено (можливо, видалений).")
+        except Exception:
+            pass
+        return
+    display = anime_db.resolve_display_title(series)
+    episodes = anime_db.get_episodes(series_id)
+    if not episodes:
+        try:
+            await query.message.edit_text(
+                f"🔧 **{display}**: немає скачаних епізодів у базі.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅ Назад", callback_data="anime_fixlist")
+                ]])
+            )
+        except Exception:
+            pass
+        return
+
+    buttons = []
+    for ep in episodes:
+        label = f"S{ep['season']:02d}E{ep['episode']:02d}"
+        buttons.append([
+            InlineKeyboardButton(f"🗑 {label}", callback_data=f"anime_fixdelask_{series_id}_{ep['season']}_{ep['episode']}"),
+            InlineKeyboardButton(f"🔄 {label}", callback_data=f"anime_fixredl_{series_id}_{ep['season']}_{ep['episode']}"),
+        ])
+    buttons.append([InlineKeyboardButton("⬅ Назад", callback_data="anime_fixlist")])
+    try:
+        await query.message.edit_text(
+            f"🔧 **{display}** — скачані епізоди:\n"
+            f"🗑 видалити (з диску і бази) · 🔄 перезавантажити (перекачати заново з каналу)",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixsel_"))
+async def anime_fixsel_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    await query.answer()
+    await _show_fix_episodes(query, series_id)
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixdelask_"))
+async def anime_fixdelask_callback(client: Client, query: CallbackQuery):
+    parts = query.data.split("_")
+    series_id, season, episode = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    series = anime_db.get_series_by_id(series_id)
+    display = anime_db.resolve_display_title(series) if series else f"#{series_id}"
+    await query.answer()
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Так, видалити", callback_data=f"anime_fixdelyes_{series_id}_{season}_{episode}"),
+        InlineKeyboardButton("❌ Скасувати", callback_data=f"anime_fixsel_{series_id}"),
+    ]])
+    try:
+        await query.message.edit_text(
+            f"Видалити **{display}** S{season:02d}E{episode:02d} з диску і з бази?\n"
+            f"(наступна перевірка сама перекачає її знову, якщо серія все ще є в каналі)",
+            reply_markup=kb
+        )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixdelyes_"))
+async def anime_fixdelyes_callback(client: Client, query: CallbackQuery):
+    parts = query.data.split("_")
+    series_id, season, episode = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    series = anime_db.get_series_by_id(series_id)
+    if not series:
+        await query.answer("Тайтл не знайдено.")
+        return
+    file_deleted = anime_fixer.delete_episode(series, season, episode)
+    await query.answer("🗑 Видалено (файл + запис у базі)" if file_deleted else "🗑 Запис видалено (файл на диску не знайдено)")
+    await _show_fix_episodes(query, series_id)
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixredl_"))
+async def anime_fixredl_callback(client: Client, query: CallbackQuery):
+    parts = query.data.split("_")
+    series_id, season, episode = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    series = anime_db.get_series_by_id(series_id)
+    if not series:
+        await query.answer("Тайтл не знайдено.")
+        return
+    display = anime_db.resolve_display_title(series)
+    await query.answer(f"🔄 Перезавантажую S{season:02d}E{episode:02d}...")
+
+    status = None
+    try:
+        status = await query.message.reply_text(
+            f"⏳ Перезавантажую **{display}** S{season:02d}E{episode:02d}..."
+        )
+    except Exception as e:
+        logger.warning(f"Could not send redownload status message: {e}")
+
+    ok = await anime_fixer.redownload_episode(series, season, episode)
+
+    if status:
+        try:
+            await status.edit_text(
+                f"✅ Перезавантажено: **{display}** S{season:02d}E{episode:02d}"
+                if ok else
+                f"❌ Не вдалось перезавантажити **{display}** S{season:02d}E{episode:02d} "
+                f"(серію не знайдено в каналі, або сталась помилка завантаження — див. логи)"
+            )
+        except Exception:
+            pass
 
 
 async def _run_checkall(client: Client, series_list: list, status_msg: Message):

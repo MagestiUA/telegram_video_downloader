@@ -180,6 +180,44 @@ def get_all_active_series(category: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def get_recent_series() -> list[sqlite3.Row]:
+    """
+    All series started within MAX_AGE_DAYS, active OR stopped — unlike
+    get_active_series()/get_all_active_series(), this INCLUDES finished/
+    manually-stopped titles too. Used by the "Виправити тайтл" menu, since a
+    wrongly-downloaded episode might belong to a title that already finished
+    airing (and so is no longer "active") but is still worth fixing.
+    """
+    cutoff = _cutoff_date()
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM series WHERE started_at > ? ORDER BY id DESC",
+            (cutoff,)
+        ).fetchall()
+
+
+def get_episodes(series_id: int) -> list[sqlite3.Row]:
+    """All downloaded-episode records for a series, oldest first."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM episodes WHERE series_id = ? ORDER BY season, episode",
+            (series_id,)
+        ).fetchall()
+
+
+def delete_episode(series_id: int, season: int, episode: int):
+    """
+    Remove an episode's DB record — used when fixing a wrongly-downloaded
+    episode, so the next check cycle treats it as not-yet-downloaded and
+    picks it up again automatically (or it's redownloaded manually).
+    """
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM episodes WHERE series_id = ? AND season = ? AND episode = ?",
+            (series_id, season, episode)
+        )
+
+
 def stop_series(series_id: int):
     with _connect() as conn:
         conn.execute("UPDATE series SET active = 0 WHERE id = ?", (series_id,))
