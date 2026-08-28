@@ -218,6 +218,22 @@ def delete_episode(series_id: int, season: int, episode: int):
         )
 
 
+def set_base_url(series_id: int, new_url: str):
+    """
+    Re-anchor a single series to a brand-new source URL, keeping its id,
+    title, display_title, and downloaded-episode history intact. Needed when
+    a source channel doesn't just rename (see rebase_channel_username) but
+    gets rebuilt/reposted from scratch — old forum-topic anchor message IDs
+    become permanently invalid even after fixing the username, since the
+    message numbering itself was reset. The caller re-points the series at
+    whatever the CURRENT anchor message for that title is; the checker picks
+    up new episodes from there without re-downloading what's already in the
+    episodes table.
+    """
+    with _connect() as conn:
+        conn.execute("UPDATE series SET base_url = ? WHERE id = ?", (new_url, series_id))
+
+
 def rebase_channel_username(old_username: str, new_username: str) -> int:
     """
     Bulk-fix every series whose base_url still points at a shared

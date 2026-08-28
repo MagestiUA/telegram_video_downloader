@@ -793,9 +793,10 @@ async def _show_fix_episodes(query: CallbackQuery, series_id: int):
         try:
             await query.message.edit_text(
                 f"🔧 **{display}**: немає скачаних епізодів у базі.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⬅ Назад", callback_data="anime_fixlist")
-                ]])
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Оновити посилання каналу", callback_data=f"anime_fixreanchor_{series_id}")],
+                    [InlineKeyboardButton("⬅ Назад", callback_data="anime_fixlist")],
+                ])
             )
         except Exception:
             pass
@@ -808,11 +809,13 @@ async def _show_fix_episodes(query: CallbackQuery, series_id: int):
             InlineKeyboardButton(f"🗑 {label}", callback_data=f"anime_fixdelask_{series_id}_{ep['season']}_{ep['episode']}"),
             InlineKeyboardButton(f"🔄 {label}", callback_data=f"anime_fixredl_{series_id}_{ep['season']}_{ep['episode']}"),
         ])
+    buttons.append([InlineKeyboardButton("🔗 Оновити посилання каналу", callback_data=f"anime_fixreanchor_{series_id}")])
     buttons.append([InlineKeyboardButton("⬅ Назад", callback_data="anime_fixlist")])
     try:
         await query.message.edit_text(
             f"🔧 **{display}** — скачані епізоди:\n"
-            f"🗑 видалити (з диску і бази) · 🔄 перезавантажити (перекачати заново з каналу)",
+            f"🗑 видалити (з диску і бази) · 🔄 перезавантажити (перекачати заново з каналу)\n"
+            f"🔗 внизу — оновити посилання-якір на тему (якщо канал перебудували і старий якір зламався)",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
     except Exception:
@@ -891,6 +894,50 @@ async def anime_fixredl_callback(client: Client, query: CallbackQuery):
             )
         except Exception:
             pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_fixreanchor_"))
+async def anime_fixreanchor_callback(client: Client, query: CallbackQuery):
+    """
+    Re-point a series at a brand-new anchor URL — for when a source channel
+    doesn't just rename (see /anime rebase) but gets rebuilt/reposted from
+    scratch, resetting its internal message numbering so even a
+    username-only fix leaves every stored forum-topic anchor pointing at a
+    message that no longer exists (MSG_ID_INVALID).
+    """
+    series_id = int(query.data.split("_")[-1])
+    series = anime_db.get_series_by_id(series_id)
+    if not series:
+        await query.answer("Тайтл не знайдено.")
+        return
+    display = anime_db.resolve_display_title(series)
+    await query.answer()
+    asyncio.create_task(_run_reanchor(query.message.chat.id, series_id, display))
+
+
+async def _run_reanchor(chat_id: int, series_id: int, display: str):
+    reply = await ask_user_fresh(
+        chat_id,
+        f"🔗 Встав нове посилання-якір на актуальну тему **{display}** в каналі "
+        f"(наприклад `https://t.me/mediareser/8394`), або напиши `cancel`:"
+    )
+    if not reply:
+        await app.send_message(chat_id, "Скасовано.")
+        return
+
+    new_url = _normalize_url(reply.strip())
+    handler = get_site_handler(new_url)
+    if not handler or not handler.is_valid_url(new_url):
+        await app.send_message(chat_id, f"❌ Посилання не розпізнано як підтримуване джерело: {new_url}")
+        return
+
+    anime_db.set_base_url(series_id, new_url)
+    await app.send_message(
+        chat_id,
+        f"✅ Посилання для **{display}** оновлено на {new_url}.\n"
+        f"Наступна перевірка (фонова або 🔄✅ Перевірити все) підхопить нові серії з нового якоря, "
+        f"вже завантажені серії заново не перекачуються."
+    )
 
 
 async def _run_checkall(client: Client, series_list: list, status_msg: Message):
