@@ -218,6 +218,28 @@ def delete_episode(series_id: int, season: int, episode: int):
         )
 
 
+def rebase_channel_username(old_username: str, new_username: str) -> int:
+    """
+    Bulk-fix every series whose base_url still points at a shared
+    "media library" channel's OLD public @username after the channel owner
+    renames it in Telegram. A username change breaks every stored
+    t.me/{old_username}/{msg_id} link outright — Telegram frees the old name
+    for anyone else to claim, while the channel itself (and its numeric
+    chat_id) is unaffected. Private per-title channels (t.me/+invite-hash)
+    are unaffected by this — they're tracked by numeric chat_id, not a
+    username, so they never break on a rename.
+    Returns the number of rows updated.
+    """
+    old_prefix = f"https://t.me/{old_username.lstrip('@')}/"
+    new_prefix = f"https://t.me/{new_username.lstrip('@')}/"
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE series SET base_url = ? || substr(base_url, ?) WHERE base_url LIKE ?",
+            (new_prefix, len(old_prefix) + 1, f"{old_prefix}%")
+        )
+        return cur.rowcount
+
+
 def stop_series(series_id: int):
     with _connect() as conn:
         conn.execute("UPDATE series SET active = 0 WHERE id = ?", (series_id,))

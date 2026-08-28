@@ -951,6 +951,9 @@ ANIME_HELP = (
     "**Команди:**\n"
     "• `/anime {url}` — додати тайтл\n"
     "• `/anime list` — список активних тайтлів з кнопками зупинки\n"
+    "• `/anime rebase СТАРИЙ_USERNAME НОВИЙ_USERNAME` — виправити посилання "
+    "всіх тайтлів медіатеки після зміни її публічного username в Telegram "
+    "(приватних каналів це не стосується — вони прив'язані до chat_id, не username)\n"
     "• `/anime help` — ця довідка"
 )
 
@@ -1153,6 +1156,29 @@ async def anime_command(client: Client, message: Message):
     if not arg or arg == "list":
         text, kb = _tracking_list_content("anime")
         await message.reply_text(text, reply_markup=kb)
+        return
+
+    if arg.startswith("rebase "):
+        # /anime rebase OLD_USERNAME NEW_USERNAME — fixes every tracked title
+        # whose t.me/{OLD_USERNAME}/... link broke because a shared
+        # "media library" channel's public username got changed in Telegram.
+        rebase_parts = arg.split(maxsplit=2)
+        if len(rebase_parts) != 3:
+            await message.reply_text(
+                "Використання: `/anime rebase СТАРИЙ_USERNAME НОВИЙ_USERNAME`\n"
+                "Наприклад: `/anime rebase RH_MediaLib RH_MediaLib2`"
+            )
+            return
+        _, old_username, new_username = rebase_parts
+        updated = anime_db.rebase_channel_username(old_username, new_username)
+        if updated:
+            await message.reply_text(
+                f"✅ Оновлено {updated} посилань: `{old_username}` → `{new_username}`."
+            )
+        else:
+            await message.reply_text(
+                f"⚠️ Жодного тайтла з посиланням на `{old_username}` не знайдено — перевірте назву."
+            )
         return
 
     await _track_anime_url(client, message, arg)
