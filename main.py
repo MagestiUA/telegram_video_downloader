@@ -1149,12 +1149,35 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     # links for the same anime) — check by the resolved official title.
     existing_series = anime_db.find_active_series_by_title(title, category="anime")
     if existing_series:
+        if existing_series["base_url"] == url:
+            try:
+                await status.edit_text(
+                    f"⚠️ **{title}** вже відстежується (додано {existing_series['started_at'][:10]})."
+                )
+            except Exception:
+                pass
+            return
+
+        # Same (already-tracked) title, but a DIFFERENT link than what's
+        # currently stored — the source channel most likely got renamed
+        # and/or rebuilt (new username, or even a fully reset message
+        # numbering) and reposted this title's episodes under a new anchor.
+        # Self-heal: re-point the existing series at the new link instead of
+        # rejecting as a duplicate, so a fresh "watch online" post for a
+        # KNOWN title auto-fixes tracking without going through "🔧
+        # Виправити тайтл" → "🔗 Оновити посилання" by hand for every title.
+        anime_db.set_base_url(existing_series["id"], url)
         try:
             await status.edit_text(
-                f"⚠️ **{title}** вже відстежується (додано {existing_series['started_at'][:10]})."
+                f"🔗 **{title}** вже відстежується — знайдено нове посилання, "
+                f"оновлюю якір і перевіряю нові серії..."
             )
         except Exception:
             pass
+        refreshed = anime_db.get_series_by_id(existing_series["id"])
+        asyncio.create_task(
+            anime_checker.process_series(refreshed, client, initial_status_msg=status)
+        )
         return
 
     display_title = raw_title or title
