@@ -1,3 +1,4 @@
+import difflib
 import os
 import sqlite3
 import logging
@@ -31,16 +32,55 @@ class TitleMapper:
                 )
             """)
 
+    # Below this similarity ratio (difflib.SequenceMatcher, 0..1) a fuzzy
+    # candidate is NOT trusted and get_mapping() falls back to asking the
+    # user — chosen from real data: a genuine caption-phrasing drift for the
+    # SAME anime ("Ми з тобою протилежності" vs a later post's "Ми з тобою
+    # повні протилежності") scored ~0.89, while two actually-different
+    # tracked titles scored ~0.38. 0.85 sits well above the gap.
+    FUZZY_MATCH_THRESHOLD = 0.85
+
     def get_mapping(self, bad_title: str) -> str | None:
-        """Returns the corrected title if a mapping exists (exact match on stripped raw title)."""
+        """
+        Returns the corrected title if a mapping exists. Tries an exact
+        match first (fast path, the common case). Falls back to a fuzzy
+        match against all known raw titles — AI-extracted captions for the
+        SAME anime can drift slightly between posts (a later post adding or
+        rewording a word the earlier one didn't have), which an exact match
+        misses and would otherwise re-prompt the user for an already-known
+        title every time the phrasing shifts slightly. Only trusts a fuzzy
+        match above FUZZY_MATCH_THRESHOLD, to avoid conflating two
+        genuinely different titles that just happen to look similar.
+        """
         if not bad_title:
             return None
+        normalized = bad_title.strip()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT official_title FROM mappings WHERE raw_title = ?",
-                (bad_title.strip(),)
+                (normalized,)
             ).fetchone()
-        return row["official_title"] if row else None
+            if row:
+                return row["official_title"]
+            rows = conn.execute("SELECT raw_title, official_title FROM mappings").fetchall()
+
+        target = " ".join(normalized.split()).lower()
+        best_ratio = 0.0
+        best_row = None
+        for r in rows:
+            candidate = " ".join((r["raw_title"] or "").split()).lower()
+            ratio = difflib.SequenceMatcher(None, target, candidate).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_row = r
+
+        if best_row and best_ratio >= self.FUZZY_MATCH_THRESHOLD:
+            logger.info(
+                f"Fuzzy title match: {bad_title!r} ~ {best_row['raw_title']!r} "
+                f"(ratio={best_ratio:.2f}) -> {best_row['official_title']!r}"
+            )
+            return best_row["official_title"]
+        return None
 
     def get_reverse_mapping(self, official_title: str) -> str | None:
         """
