@@ -16,9 +16,17 @@ def sanitize_title(title: str, max_len: int = 120) -> str:
     Clamped to max_len to stay well under typical filesystem NAME_MAX limits —
     multi-byte scripts (Cyrillic, etc.) use 2+ bytes per character in UTF-8,
     so a long localized title can silently blow past a 255-byte limit.
+
+    Trailing dots/spaces are stripped even though Linux/ext4 happily stores
+    them — Windows silently refuses to represent a name ending in "." or " "
+    (SMB/Samba then serves it under a mangled 8.3-style alias like
+    "I6ZQ8N~V" instead, since it can't expose the real name to a Windows
+    client). A show whose official title genuinely ends with a period (e.g.
+    "...Ganbattemasu.") would otherwise create a folder that's fine on the
+    Pi itself but unreadable/confusingly renamed from any Windows/SMB share.
     """
     safe = "".join(c for c in title if c.isalnum() or c in " .()_-").strip()
-    return safe[:max_len].rstrip()
+    return safe[:max_len].rstrip(" .")
 
 
 def scan_existing_episodes(folder_path: str) -> set[tuple[int, int]]:
