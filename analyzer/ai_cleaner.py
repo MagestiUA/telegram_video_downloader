@@ -160,6 +160,24 @@ If no such link is found, return {"url": null}.
 No markdown, no extra text.
 """
 
+TOTAL_EPISODES_SYSTEM_PROMPT = """
+You are an anime database expert. You will be given the OFFICIAL Romaji
+title of an anime/season. Answer with the TOTAL number of episodes in
+THIS SPECIFIC SEASON, based on your own factual knowledge (e.g. as if
+recalling a listing from MyAnimeList/AniList/AniDB).
+
+CRITICAL: Do NOT guess or estimate. Only answer with a number if you are
+confident it is the FACTUALLY CORRECT, EXACT episode count for this season
+— not a typical/average episode count for the genre or format. If you are
+not certain, or don't have real knowledge of this specific title, return
+null. A wrong number is worse than no answer — it would incorrectly stop
+tracking a still-airing show, or keep tracking a finished one forever.
+
+Return ONLY valid JSON: {"total_episodes": <integer or null>}
+No markdown, no extra text.
+"""
+
+
 async def _chat_json(messages: list[dict], retries: int = 2) -> dict | None:
     """
     Call DeepSeek in JSON mode and return the parsed object.
@@ -234,6 +252,33 @@ async def extract_metadata(text: str) -> dict | None:
         return data
     except Exception as e:
         logger.error(f"Error calling DeepSeek API: {e}")
+        return None
+
+
+async def extract_total_episodes(title: str) -> int | None:
+    """
+    Asks DeepSeek for the total episode count of a season, using its own
+    training knowledge (no live web access) — deliberately conservative:
+    the prompt instructs it to return null rather than guess, since a wrong
+    number would either cut tracking short on a still-airing show or leave
+    a finished one tracked forever. Called with the OFFICIAL Romaji title
+    (not the localized/raw one) — that's the name most likely to match how
+    the anime is indexed in DeepSeek's training data.
+    """
+    try:
+        data = await _chat_json(
+            [
+                {"role": "system", "content": TOTAL_EPISODES_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Anime (Romaji title): {title}"},
+            ],
+        )
+        logger.info(f"[total-episodes] {title!r} -> {data}")
+        if not data:
+            return None
+        total = data.get("total_episodes")
+        return int(total) if total is not None else None
+    except Exception as e:
+        logger.error(f"[total-episodes] Error extracting total episode count: {e}")
         return None
 
 

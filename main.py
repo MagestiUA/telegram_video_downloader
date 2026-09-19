@@ -728,6 +728,61 @@ async def anime_stopcancel_callback(client: Client, query: CallbackQuery):
         pass
 
 
+# ── ANIME MODE: "Поновити відстеження" — undo an auto-stop (finale
+# detected via "N з N" caption or a resolved total_episodes count). Shown
+# as a button directly on the auto-stop notification; requires a confirm
+# step like the manual stop button, since re-stopping mid-season sends the
+# checker straight back into re-downloading every remaining episode. ──────
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_renewask_"))
+async def anime_renewask_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    series = anime_db.get_series_by_id(series_id)
+    display = anime_db.resolve_display_title(series) if series else f"#{series_id}"
+    await query.answer()
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Так, поновити", callback_data=f"anime_renewyes_{series_id}"),
+        InlineKeyboardButton("❌ Скасувати", callback_data=f"anime_renewcancel_{series_id}"),
+    ]])
+    try:
+        await query.message.edit_text(
+            f"Поновити відстеження **{display}**? Бот знову шукатиме нові серії цього тайтлу.",
+            reply_markup=kb
+        )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_renewyes_"))
+async def anime_renewyes_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    series = anime_db.get_series_by_id(series_id)
+    if not series:
+        await query.answer("Тайтл не знайдено.")
+        return
+    display = anime_db.resolve_display_title(series)
+    anime_db.reactivate_series(series_id)
+    await query.answer(f"🔄 Поновлено: {display}")
+    try:
+        await query.message.edit_text(f"🔄 Відстеження **{display}** поновлено.")
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_renewcancel_"))
+async def anime_renewcancel_callback(client: Client, query: CallbackQuery):
+    series_id = int(query.data.split("_")[-1])
+    series = anime_db.get_series_by_id(series_id)
+    display = anime_db.resolve_display_title(series) if series else f"#{series_id}"
+    await query.answer("Скасовано")
+    try:
+        await query.message.edit_text(
+            f"✅ **{display}**: відстеження лишається зупиненим."
+        )
+    except Exception:
+        pass
+
+
 # ── ANIME MODE: "Виправити тайтл" — manually delete/redownload a specific
 # already-downloaded episode. Needed for cases where the source channel
 # posts the wrong variant first (e.g. subtitles-only) then later replaces it

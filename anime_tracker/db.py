@@ -57,6 +57,14 @@ def init_db():
         # used for folder/file naming. Older DBs predate this column.
         if "display_title" not in cols:
             conn.execute("ALTER TABLE series ADD COLUMN display_title TEXT")
+        # Migration: `total_episodes` — the season's known total episode
+        # count, resolved once via DeepSeek (see analyzer.ai_cleaner.
+        # extract_total_episodes) around episode 10-11, so the checker can
+        # auto-stop tracking on the actual last episode instead of relying
+        # solely on the "N з N" caption pattern, which many channels never
+        # post. NULL means "not yet resolved" (or DeepSeek wasn't confident).
+        if "total_episodes" not in cols:
+            conn.execute("ALTER TABLE series ADD COLUMN total_episodes INTEGER")
     logger.info("Anime tracking DB initialized.")
 
 
@@ -259,6 +267,32 @@ def rebase_channel_username(old_username: str, new_username: str) -> int:
 def stop_series(series_id: int):
     with _connect() as conn:
         conn.execute("UPDATE series SET active = 0 WHERE id = ?", (series_id,))
+
+
+def reactivate_series(series_id: int):
+    """
+    Re-enable tracking for a series stopped earlier (manually, by the "N з
+    N" caption pattern, or by reaching the resolved total_episodes count).
+    Used by the "🔄 Поновити відстеження" button after an auto-stop —
+    started_at is left untouched, so the ~6-month tracking-age cutoff still
+    counts from the original add date, not from the moment of renewal.
+    """
+    with _connect() as conn:
+        conn.execute("UPDATE series SET active = 1 WHERE id = ?", (series_id,))
+
+
+def set_total_episodes(series_id: int, total_episodes: int):
+    """
+    Persist the season's total episode count once DeepSeek resolves it
+    (see analyzer.ai_cleaner.extract_total_episodes) — the checker compares
+    against this on every new download to auto-stop tracking on the actual
+    last episode.
+    """
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE series SET total_episodes = ? WHERE id = ?",
+            (total_episodes, series_id)
+        )
 
 
 def record_episode(series_id: int, season: int, episode: int):

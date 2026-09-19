@@ -1,6 +1,9 @@
 import asyncio
 import logging
 
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from analyzer.ai_cleaner import extract_total_episodes
 from anime_tracker import db
 from anime_tracker.sites import get_handler
 from config.config import settings
@@ -24,6 +27,29 @@ INTER_SERIES_DELAY_SECONDS = 4
 # suspected trigger for the periodic "Auth key not found" 401 hiccup on the
 # media session. A short breather between downloads is cheap insurance.
 INTER_DOWNLOAD_DELAY_SECONDS = 5
+
+# Episode numbers at which we ask DeepSeek for the season's total episode
+# count, IF it's not already known — most source channels only tag the
+# actual finale as "N з N"; earlier episodes are posted as "N з XX"
+# (unknown total), so that caption pattern alone leaves most titles never
+# auto-stopping and requiring a manual stop. Trying at both 10 AND 11 (not
+# just once) gives DeepSeek a second chance if the first attempt returned
+# null (not confident) — the resolution only needs to succeed once, after
+# which total_episodes is cached in the DB and never re-queried.
+TOTAL_EPISODES_PROBE_EPISODES = (10, 11)
+
+
+def _renew_tracking_keyboard(series_id: int) -> InlineKeyboardMarkup:
+    """
+    Attached to an auto-stop notification (finale detected via caption OR
+    resolved total_episodes) — lets the user undo a wrong auto-stop without
+    re-adding the title from scratch (which would lose episode/display_title
+    history). main.py's anime_renewask_/anime_renewyes_/anime_renewcancel_
+    callbacks handle the actual confirm-then-reactivate flow.
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Поновити відстеження", callback_data=f"anime_renewask_{series_id}")
+    ]])
 
 
 async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
@@ -82,6 +108,7 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         f"✅ **{display}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
     )
     downloaded_any = False
+    known_total = series["total_episodes"]  # local cache; may resolve mid-loop below
 
     for i, ep in enumerate(new_eps):
         season, episode, source = ep["season"], ep["episode"], ep["source"]
@@ -114,20 +141,36 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         if ok:
             db.record_episode(series_id, season, episode)
             downloaded_any = True
-            is_finale = ep.get("is_finale", False)
+
+            # Try to resolve the season's total episode count around
+            # episode 10-11, if not already known — most channels never tag
+            # a non-finale episode with the real total ("N з XX" instead of
+            # "N з N"), so this is the main way most titles ever get
+            # auto-stopped at all, instead of requiring a manual stop.
+            if known_total is None and episode in TOTAL_EPISODES_PROBE_EPISODES:
+                total = await extract_total_episodes(title)
+                if total:
+                    known_total = total
+                    db.set_total_episodes(series_id, total)
+                    logger.info(f"[{title}] DeepSeek визначив кількість серій: {total}.")
+
+            is_finale = ep.get("is_finale", False) or (
+                known_total is not None and episode >= known_total
+            )
 
             done_text = (
                 f"✅ Завантажено: **{display}** S{season:02d}E{episode:02d}"
                 + ("\n🏁 Це остання серія — знято з відстеження." if is_finale else "")
             )
+            reply_markup = _renew_tracking_keyboard(series_id) if is_finale else None
 
             all_users = settings.allowed_users_set or {chat_id}
             for uid in all_users:
                 try:
                     if uid == chat_id and notify_msg:
-                        await notify_msg.edit_text(done_text)
+                        await notify_msg.edit_text(done_text, reply_markup=reply_markup)
                     else:
-                        await client.send_message(uid, done_text)
+                        await client.send_message(uid, done_text, reply_markup=reply_markup)
                 except Exception as e:
                     logger.warning(f"Failed to notify {uid}: {e}")
 
