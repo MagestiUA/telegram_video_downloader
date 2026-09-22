@@ -59,12 +59,17 @@ def init_db():
             conn.execute("ALTER TABLE series ADD COLUMN display_title TEXT")
         # Migration: `total_episodes` — the season's known total episode
         # count, resolved once via DeepSeek (see analyzer.ai_cleaner.
-        # extract_total_episodes) around episode 10-11, so the checker can
-        # auto-stop tracking on the actual last episode instead of relying
-        # solely on the "N з N" caption pattern, which many channels never
-        # post. NULL means "not yet resolved" (or DeepSeek wasn't confident).
+        # extract_total_episodes) once enough episodes are downloaded, so
+        # the checker can auto-stop tracking on the actual last episode
+        # instead of relying solely on the "N з N" caption pattern, which
+        # many channels never post. 0 means "not yet resolved" — chosen
+        # over NULL so every read/comparison can treat it as a plain int.
         if "total_episodes" not in cols:
-            conn.execute("ALTER TABLE series ADD COLUMN total_episodes INTEGER")
+            conn.execute("ALTER TABLE series ADD COLUMN total_episodes INTEGER NOT NULL DEFAULT 0")
+        else:
+            # An earlier version of this column allowed NULL — normalize
+            # any such rows to 0 so callers never have to special-case None.
+            conn.execute("UPDATE series SET total_episodes = 0 WHERE total_episodes IS NULL")
     logger.info("Anime tracking DB initialized.")
 
 

@@ -28,15 +28,19 @@ INTER_SERIES_DELAY_SECONDS = 4
 # media session. A short breather between downloads is cheap insurance.
 INTER_DOWNLOAD_DELAY_SECONDS = 5
 
-# Episode numbers at which we ask DeepSeek for the season's total episode
-# count, IF it's not already known — most source channels only tag the
-# actual finale as "N з N"; earlier episodes are posted as "N з XX"
-# (unknown total), so that caption pattern alone leaves most titles never
-# auto-stopping and requiring a manual stop. Trying at both 10 AND 11 (not
-# just once) gives DeepSeek a second chance if the first attempt returned
-# null (not confident) — the resolution only needs to succeed once, after
-# which total_episodes is cached in the DB and never re-queried.
-TOTAL_EPISODES_PROBE_EPISODES = (10, 11)
+# Once at least this many episodes are downloaded (and total_episodes is
+# still unresolved, i.e. 0), ask DeepSeek for the season's total episode
+# count — most source channels only tag the actual finale as "N з N";
+# earlier episodes are posted as "N з XX" (unknown total), so that caption
+# pattern alone leaves most titles never auto-stopping and requiring a
+# manual stop.
+TOTAL_EPISODES_PROBE_THRESHOLD = 10
+
+# If DeepSeek isn't confident enough to answer (returns null), fall back to
+# this as a reasonable default season length rather than leaving
+# total_episodes at 0 forever (which would mean re-asking DeepSeek — and
+# getting the same null — on every single check cycle indefinitely).
+DEFAULT_TOTAL_EPISODES_FALLBACK = 12
 
 
 def _renew_tracking_keyboard(series_id: int) -> InlineKeyboardMarkup:
@@ -50,6 +54,64 @@ def _renew_tracking_keyboard(series_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🔄 Поновити відстеження", callback_data=f"anime_renewask_{series_id}")
     ]])
+
+
+async def _resolve_total_episodes_and_maybe_stop(
+    series: db.sqlite3.Row, client, handler, url: str, title: str, display: str
+) -> bool:
+    """
+    Run BEFORE contacting Telegram at all, on every check cycle:
+    1. Once >= TOTAL_EPISODES_PROBE_THRESHOLD episodes are already
+       downloaded and total_episodes is still 0 (unresolved), ask DeepSeek
+       for the season's real length; if it doesn't know, fall back to
+       DEFAULT_TOTAL_EPISODES_FALLBACK so we don't re-ask every cycle.
+    2. If total_episodes is known (> 0) and we've already downloaded that
+       many episodes, the season is done — auto-stop tracking right here,
+       without ever hitting Telegram this cycle.
+
+    Returns True if tracking was just auto-stopped (caller should skip the
+    rest of this cycle's Telegram check for this series).
+    """
+    series_id = series["id"]
+    chat_id = series["chat_id"]
+    downloaded_count = len(db.get_downloaded_set(series_id))
+    total_episodes = series["total_episodes"] or 0
+
+    if total_episodes == 0 and downloaded_count >= TOTAL_EPISODES_PROBE_THRESHOLD:
+        total = await extract_total_episodes(title)
+        total_episodes = total if total else DEFAULT_TOTAL_EPISODES_FALLBACK
+        db.set_total_episodes(series_id, total_episodes)
+        logger.info(
+            f"[{title}] кількість серій сезону: "
+            f"{'визначено DeepSeek' if total else 'DeepSeek не впевнений, fallback'} "
+            f"= {total_episodes}."
+        )
+
+    if total_episodes > 0 and downloaded_count >= total_episodes:
+        logger.info(
+            f"[{title}] завантажено {downloaded_count}/{total_episodes} — "
+            f"відстеження зупинено (без звернення до ТГ цього циклу)."
+        )
+        db.stop_series(series_id)
+        try:
+            await handler.cleanup(url)
+        except Exception as e:
+            logger.warning(f"[{title}] cleanup() after auto-stop failed: {e}")
+
+        done_text = (
+            f"🏁 **{display}**: завантажено всі {downloaded_count}/{total_episodes} "
+            f"серій — знято з відстеження."
+        )
+        reply_markup = _renew_tracking_keyboard(series_id)
+        all_users = settings.allowed_users_set or {chat_id}
+        for uid in all_users:
+            try:
+                await client.send_message(uid, done_text, reply_markup=reply_markup)
+            except Exception as e:
+                logger.warning(f"Failed to notify {uid}: {e}")
+        return True
+
+    return False
 
 
 async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
@@ -83,6 +145,15 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         await _finalize_status(f"❌ **{display}**: джерело не підтримується.")
         return False
 
+    # Season-length check: resolve total_episodes (if not yet known and
+    # we've downloaded enough to ask), and auto-stop right here if the
+    # known total is already fully downloaded — BEFORE spending any
+    # Telegram API calls this cycle.
+    stopped = await _resolve_total_episodes_and_maybe_stop(series, client, handler, url, title, display)
+    if stopped:
+        await _finalize_status(f"🏁 **{display}**: усі серії вже завантажені — знято з відстеження.")
+        return False
+
     # Fetch all currently available DUB episodes
     available = await handler.list_episodes(url)
     if not available:
@@ -108,7 +179,6 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         f"✅ **{display}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
     )
     downloaded_any = False
-    known_total = series["total_episodes"]  # local cache; may resolve mid-loop below
 
     for i, ep in enumerate(new_eps):
         season, episode, source = ep["season"], ep["episode"], ep["source"]
@@ -142,21 +212,11 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
             db.record_episode(series_id, season, episode)
             downloaded_any = True
 
-            # Try to resolve the season's total episode count around
-            # episode 10-11, if not already known — most channels never tag
-            # a non-finale episode with the real total ("N з XX" instead of
-            # "N з N"), so this is the main way most titles ever get
-            # auto-stopped at all, instead of requiring a manual stop.
-            if known_total is None and episode in TOTAL_EPISODES_PROBE_EPISODES:
-                total = await extract_total_episodes(title)
-                if total:
-                    known_total = total
-                    db.set_total_episodes(series_id, total)
-                    logger.info(f"[{title}] DeepSeek визначив кількість серій: {total}.")
-
-            is_finale = ep.get("is_finale", False) or (
-                known_total is not None and episode >= known_total
-            )
+            # Caption-based finale detection ("N з N") — independent of, and
+            # complementary to, the total_episodes-based auto-stop, which
+            # runs as a pre-check at the top of the NEXT cycle instead of
+            # here (see _resolve_total_episodes_and_maybe_stop).
+            is_finale = ep.get("is_finale", False)
 
             done_text = (
                 f"✅ Завантажено: **{display}** S{season:02d}E{episode:02d}"

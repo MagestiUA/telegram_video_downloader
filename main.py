@@ -761,12 +761,44 @@ async def anime_renewyes_callback(client: Client, query: CallbackQuery):
         await query.answer("Тайтл не знайдено.")
         return
     display = anime_db.resolve_display_title(series)
-    anime_db.reactivate_series(series_id)
-    await query.answer(f"🔄 Поновлено: {display}")
+    await query.answer()
     try:
-        await query.message.edit_text(f"🔄 Відстеження **{display}** поновлено.")
+        await query.message.edit_text(f"🔄 Поновлюю **{display}**...")
     except Exception:
         pass
+    # Ask for the season's episode count right away — auto-stop just fired
+    # because total_episodes was reached (or DeepSeek's guess was wrong), so
+    # blindly reactivating with the same (wrong) number would just re-stop
+    # on the very next check cycle.
+    asyncio.create_task(_run_renew_tracking(query.message.chat.id, series_id, display))
+
+
+async def _run_renew_tracking(chat_id: int, series_id: int, display: str):
+    reply = await ask_user_fresh(
+        chat_id,
+        f"🔢 Скільки серій у сезоні **{display}**? Введіть число _(або `cancel`)_:"
+    )
+    if not reply:
+        await app.send_message(chat_id, f"❌ Поновлення скасовано — **{display}** лишається зупиненим.")
+        return
+
+    try:
+        total = int(reply.strip())
+        if total <= 0:
+            raise ValueError
+    except ValueError:
+        await app.send_message(
+            chat_id,
+            f"❌ Некоректне число: `{reply}`. Поновлення скасовано — **{display}** лишається зупиненим."
+        )
+        return
+
+    anime_db.set_total_episodes(series_id, total)
+    anime_db.reactivate_series(series_id)
+    await app.send_message(
+        chat_id,
+        f"🔄 Відстеження **{display}** поновлено. Кількість серій сезону: {total}."
+    )
 
 
 @app.on_callback_query(auth_filter & filters.regex("^anime_renewcancel_"))
