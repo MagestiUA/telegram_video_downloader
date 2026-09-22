@@ -301,8 +301,19 @@ def set_total_episodes(series_id: int, total_episodes: int):
 
 
 def record_episode(series_id: int, season: int, episode: int):
-    """Update last downloaded episode and insert episode record."""
+    """
+    Update last downloaded episode and insert episode record. Also resets
+    total_episodes back to 0 when this episode belongs to a DIFFERENT
+    season than the series' current last_season — one series row tracks
+    every season of a title (last_season/last_episode just move forward),
+    so a resolved total_episodes value is only valid for the season it was
+    resolved for; carrying it over into a new season would compare the new
+    season's (still small) episode count against the OLD season's total.
+    """
     with _connect() as conn:
+        row = conn.execute("SELECT last_season FROM series WHERE id = ?", (series_id,)).fetchone()
+        if row and row["last_season"] != season:
+            conn.execute("UPDATE series SET total_episodes = 0 WHERE id = ?", (series_id,))
         conn.execute(
             "UPDATE series SET last_season = ?, last_episode = ? WHERE id = ?",
             (season, episode, series_id)

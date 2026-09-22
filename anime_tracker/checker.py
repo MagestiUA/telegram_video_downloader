@@ -61,35 +61,64 @@ async def _resolve_total_episodes_and_maybe_stop(
 ) -> bool:
     """
     Run BEFORE contacting Telegram at all, on every check cycle:
-    1. Once >= TOTAL_EPISODES_PROBE_THRESHOLD episodes are already
-       downloaded and total_episodes is still 0 (unresolved), ask DeepSeek
-       for the season's real length; if it doesn't know, fall back to
-       DEFAULT_TOTAL_EPISODES_FALLBACK so we don't re-ask every cycle.
+    1. Once >= TOTAL_EPISODES_PROBE_THRESHOLD episodes of the CURRENT
+       season are already downloaded and total_episodes is still 0
+       (unresolved), ask DeepSeek for the season's real length. If it
+       doesn't know AND we haven't already downloaded more than the
+       fallback would allow, use DEFAULT_TOTAL_EPISODES_FALLBACK so we
+       don't re-ask every cycle. If we've already downloaded MORE than the
+       fallback (a backlog title crossing the threshold for the first time
+       right when this feature shipped, still clearly ongoing), do NOT
+       assign a number — that would retroactively declare it "finished" at
+       a count we've already exceeded. Leave total_episodes at 0 and keep
+       relying on the "N з N" caption pattern for such titles; the probe
+       retries next cycle in case DeepSeek can identify it later.
     2. If total_episodes is known (> 0) and we've already downloaded that
-       many episodes, the season is done — auto-stop tracking right here,
-       without ever hitting Telegram this cycle.
+       many episodes of the current season, the season is done — auto-stop
+       tracking right here, without ever hitting Telegram this cycle.
+
+    One series row spans every season a title airs (last_season/
+    last_episode just move forward) — episodes are counted for
+    series["last_season"] ONLY, never across all seasons combined, and
+    record_episode() resets total_episodes to 0 the moment a new season's
+    first episode is recorded, so a resolved count never leaks into the
+    next season.
 
     Returns True if tracking was just auto-stopped (caller should skip the
     rest of this cycle's Telegram check for this series).
     """
     series_id = series["id"]
     chat_id = series["chat_id"]
-    downloaded_count = len(db.get_downloaded_set(series_id))
+    current_season = series["last_season"]
+    downloaded_count = sum(
+        1 for (season, _episode) in db.get_downloaded_set(series_id) if season == current_season
+    )
     total_episodes = series["total_episodes"] or 0
 
     if total_episodes == 0 and downloaded_count >= TOTAL_EPISODES_PROBE_THRESHOLD:
         total = await extract_total_episodes(title)
-        total_episodes = total if total else DEFAULT_TOTAL_EPISODES_FALLBACK
-        db.set_total_episodes(series_id, total_episodes)
-        logger.info(
-            f"[{title}] кількість серій сезону: "
-            f"{'визначено DeepSeek' if total else 'DeepSeek не впевнений, fallback'} "
-            f"= {total_episodes}."
-        )
+        if total:
+            total_episodes = total
+            db.set_total_episodes(series_id, total_episodes)
+            logger.info(
+                f"[{title}] сезон {current_season}: DeepSeek визначив кількість серій = {total_episodes}."
+            )
+        elif downloaded_count < DEFAULT_TOTAL_EPISODES_FALLBACK:
+            total_episodes = DEFAULT_TOTAL_EPISODES_FALLBACK
+            db.set_total_episodes(series_id, total_episodes)
+            logger.info(
+                f"[{title}] сезон {current_season}: DeepSeek не впевнений, fallback = {total_episodes}."
+            )
+        else:
+            logger.info(
+                f"[{title}] сезон {current_season}: DeepSeek не впевнений, а вже скачано "
+                f"{downloaded_count} (> fallback {DEFAULT_TOTAL_EPISODES_FALLBACK}) — "
+                f"не встановлюю total_episodes, покладаюсь на 'N з N' у підписі."
+            )
 
     if total_episodes > 0 and downloaded_count >= total_episodes:
         logger.info(
-            f"[{title}] завантажено {downloaded_count}/{total_episodes} — "
+            f"[{title}] сезон {current_season}: завантажено {downloaded_count}/{total_episodes} — "
             f"відстеження зупинено (без звернення до ТГ цього циклу)."
         )
         db.stop_series(series_id)
@@ -99,8 +128,8 @@ async def _resolve_total_episodes_and_maybe_stop(
             logger.warning(f"[{title}] cleanup() after auto-stop failed: {e}")
 
         done_text = (
-            f"🏁 **{display}**: завантажено всі {downloaded_count}/{total_episodes} "
-            f"серій — знято з відстеження."
+            f"🏁 **{display}** (сезон {current_season}): завантажено всі "
+            f"{downloaded_count}/{total_episodes} серій — знято з відстеження."
         )
         reply_markup = _renew_tracking_keyboard(series_id)
         all_users = settings.allowed_users_set or {chat_id}
