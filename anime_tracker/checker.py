@@ -4,6 +4,7 @@ import logging
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from analyzer.ai_cleaner import extract_total_episodes
+from analyzer.anilist import get_episode_count as anilist_episode_count
 from anime_tracker import db
 from anime_tracker.sites import get_handler
 from config.config import settings
@@ -29,18 +30,37 @@ INTER_SERIES_DELAY_SECONDS = 4
 INTER_DOWNLOAD_DELAY_SECONDS = 5
 
 # Once at least this many episodes are downloaded (and total_episodes is
-# still unresolved, i.e. 0), ask DeepSeek for the season's total episode
-# count — most source channels only tag the actual finale as "N з N";
-# earlier episodes are posted as "N з XX" (unknown total), so that caption
-# pattern alone leaves most titles never auto-stopping and requiring a
-# manual stop.
+# still unresolved, i.e. 0), look up the season's total episode count —
+# most source channels only tag the actual finale as "N з N"; earlier
+# episodes are posted as "N з XX" (unknown total), so that caption pattern
+# alone leaves most titles never auto-stopping and requiring a manual stop.
 TOTAL_EPISODES_PROBE_THRESHOLD = 10
 
-# If DeepSeek isn't confident enough to answer (returns null), fall back to
-# this as a reasonable default season length rather than leaving
-# total_episodes at 0 forever (which would mean re-asking DeepSeek — and
-# getting the same null — on every single check cycle indefinitely).
+# If neither AniList nor DeepSeek can answer, fall back to this as a
+# reasonable default season length rather than leaving total_episodes at 0
+# forever (which would mean re-asking on every single check cycle
+# indefinitely). Only applied when downloaded_count hasn't already
+# exceeded it — see _resolve_total_episodes_and_maybe_stop.
 DEFAULT_TOTAL_EPISODES_FALLBACK = 12
+
+
+async def _lookup_total_episodes(title: str) -> tuple[int | None, str]:
+    """
+    Two-stage lookup for a season's total episode count, tried in order:
+    1. AniList — a live, community-maintained anime database (free, no API
+       key). Far more reliable than an LLM's memory, and often has the
+       number even before a season finishes airing.
+    2. DeepSeek's own training knowledge, as a fallback for titles AniList
+       doesn't have (rare, but happens for very new or obscure releases).
+    Returns (episode_count_or_None, source_name) for logging.
+    """
+    total = await anilist_episode_count(title)
+    if total:
+        return total, "AniList"
+    total = await extract_total_episodes(title)
+    if total:
+        return total, "DeepSeek"
+    return None, "жодне джерело"
 
 
 def _renew_tracking_keyboard(series_id: int) -> InlineKeyboardMarkup:
@@ -96,22 +116,22 @@ async def _resolve_total_episodes_and_maybe_stop(
     total_episodes = series["total_episodes"] or 0
 
     if total_episodes == 0 and downloaded_count >= TOTAL_EPISODES_PROBE_THRESHOLD:
-        total = await extract_total_episodes(title)
+        total, source = await _lookup_total_episodes(title)
         if total:
             total_episodes = total
             db.set_total_episodes(series_id, total_episodes)
             logger.info(
-                f"[{title}] сезон {current_season}: DeepSeek визначив кількість серій = {total_episodes}."
+                f"[{title}] сезон {current_season}: {source} визначив кількість серій = {total_episodes}."
             )
         elif downloaded_count < DEFAULT_TOTAL_EPISODES_FALLBACK:
             total_episodes = DEFAULT_TOTAL_EPISODES_FALLBACK
             db.set_total_episodes(series_id, total_episodes)
             logger.info(
-                f"[{title}] сезон {current_season}: DeepSeek не впевнений, fallback = {total_episodes}."
+                f"[{title}] сезон {current_season}: {source} не знайшло — fallback = {total_episodes}."
             )
         else:
             logger.info(
-                f"[{title}] сезон {current_season}: DeepSeek не впевнений, а вже скачано "
+                f"[{title}] сезон {current_season}: {source} не знайшло, а вже скачано "
                 f"{downloaded_count} (> fallback {DEFAULT_TOTAL_EPISODES_FALLBACK}) — "
                 f"не встановлюю total_episodes, покладаюсь на 'N з N' у підписі."
             )
