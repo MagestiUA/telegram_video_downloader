@@ -202,6 +202,12 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     if stopped:
         await _finalize_status(f"🏁 **{display}**: усі серії вже завантажені — знято з відстеження.")
         return False
+    # Re-fetch: the pre-check above may have just resolved total_episodes
+    # for the first time this cycle — the download loop below needs that
+    # fresh value (not the stale one captured before the pre-check ran) to
+    # recognize a finale the moment the matching episode downloads, instead
+    # of only catching it on the NEXT cycle's pre-check.
+    series = db.get_series_by_id(series_id)
 
     # Fetch all currently available DUB episodes
     available = await handler.list_episodes(url)
@@ -228,6 +234,8 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         f"✅ **{display}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
     )
     downloaded_any = False
+    current_season = series["last_season"]
+    known_total = series["total_episodes"] or 0
 
     for i, ep in enumerate(new_eps):
         season, episode, source = ep["season"], ep["episode"], ep["source"]
@@ -261,11 +269,16 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
             db.record_episode(series_id, season, episode)
             downloaded_any = True
 
-            # Caption-based finale detection ("N з N") — independent of, and
-            # complementary to, the total_episodes-based auto-stop, which
-            # runs as a pre-check at the top of the NEXT cycle instead of
-            # here (see _resolve_total_episodes_and_maybe_stop).
-            is_finale = ep.get("is_finale", False)
+            # Two independent finale signals: the caption-based "N з N"
+            # pattern, OR this episode itself reaching the already-known
+            # total_episodes for its season. The latter is normally caught
+            # by the pre-check at the top of the NEXT cycle — checking it
+            # again right here means a season that finishes THIS cycle
+            # stops immediately instead of sitting "done but still active"
+            # for up to CHECK_INTERVAL_HOURS until the next cycle notices.
+            is_finale = ep.get("is_finale", False) or (
+                known_total > 0 and season == current_season and episode >= known_total
+            )
 
             done_text = (
                 f"✅ Завантажено: **{display}** S{season:02d}E{episode:02d}"
