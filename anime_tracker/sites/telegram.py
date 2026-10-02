@@ -116,6 +116,53 @@ def _dedupe_episodes(episodes: list[dict], where: str) -> list[dict]:
     return [ep for ep in episodes if best[(ep["season"], ep["episode"])] is ep]
 
 
+# A video shorter than this fraction of the channel's MEDIAN video length is
+# treated as a bonus clip, not an episode. Channels name their specials however
+# they like ("Монолог Маомао", "Спешл", just a number), so the title can't be
+# trusted — the length can: a 2-5 minute clip next to ~23 minute episodes.
+SHORT_CLIP_RATIO = 0.4
+
+# The median of one or two videos says nothing about what a "normal" episode
+# is here, so with fewer videos than this nothing is filtered.
+MIN_VIDEOS_FOR_MEDIAN = 4
+
+
+def _drop_short_specials(episodes: list[dict], where: str) -> list[dict]:
+    """
+    Drop clips much shorter than the source's typical episode. Specials are
+    never wanted automatically, and — unlike duplicates of a real episode's
+    number — they can carry a number of their own, so _dedupe_episodes
+    alone wouldn't catch them. Median-relative on purpose: a channel of
+    genuinely short-form episodes has a short median, so none of them are
+    dropped. A document has no known duration (0) and is never dropped here.
+    Every dropped clip is logged with its length.
+    """
+    durations = sorted(e["duration"] for e in episodes if e.get("duration"))
+    if len(durations) < MIN_VIDEOS_FOR_MEDIAN:
+        return episodes
+    mid = len(durations) // 2
+    median = durations[mid] if len(durations) % 2 else (durations[mid - 1] + durations[mid]) / 2
+    threshold = median * SHORT_CLIP_RATIO
+
+    kept = []
+    for e in episodes:
+        d = e.get("duration", 0)
+        if d and d < threshold:
+            logger.warning(
+                f"[{where}] skipping short clip (likely a special): msg {e.get('message_id')} "
+                f"{e.get('caption')!r} lasts {_fmt_dur(d)}, under {int(SHORT_CLIP_RATIO * 100)}% "
+                f"of the typical {_fmt_dur(int(median))}"
+            )
+            continue
+        kept.append(e)
+    return kept
+
+
+def _clean_listing(episodes: list[dict], where: str) -> list[dict]:
+    """Specials out first, THEN one message per (season, episode)."""
+    return _dedupe_episodes(_drop_short_specials(episodes, where), where)
+
+
 def _is_finale(caption: str) -> bool:
     m = FINALE_RE.search(caption)
     if not m:
@@ -265,7 +312,7 @@ class TelegramHandler(BaseSiteHandler):
             f"list_episodes({chat}): {len(episodes)} episodes, "
             f"{cache_hits} from cache, {cache_misses} newly resolved via DeepSeek."
         )
-        return _dedupe_episodes(episodes, f"list_episodes({chat})")
+        return _clean_listing(episodes, f"list_episodes({chat})")
 
     async def _list_episodes_private(self, invite_url: str) -> list[dict]:
         client = get_userbot_client()
@@ -291,7 +338,7 @@ class TelegramHandler(BaseSiteHandler):
             f"list_episodes(private {chat_id}): {len(episodes)} episodes, "
             f"{cache_hits} from cache, {cache_misses} newly resolved via DeepSeek."
         )
-        return _dedupe_episodes(episodes, f"list_episodes(private {chat_id})")
+        return _clean_listing(episodes, f"list_episodes(private {chat_id})")
 
     async def download(self, source: str, title: str, season: int, episode: int,
                        path: str, notify_msg=None) -> bool:
