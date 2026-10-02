@@ -255,7 +255,7 @@ async def extract_metadata(text: str) -> dict | None:
         return None
 
 
-async def extract_total_episodes(title: str) -> int | None:
+async def extract_total_episodes(title: str, season: int = 1) -> int | None:
     """
     Asks DeepSeek for the total episode count of a season, using its own
     training knowledge (no live web access) — deliberately conservative:
@@ -263,16 +263,17 @@ async def extract_total_episodes(title: str) -> int | None:
     number would either cut tracking short on a still-airing show or leave
     a finished one tracked forever. Called with the OFFICIAL Romaji title
     (not the localized/raw one) — that's the name most likely to match how
-    the anime is indexed in DeepSeek's training data.
+    the anime is indexed in DeepSeek's training data. The season is passed
+    explicitly: the same title has a different episode count per season.
     """
     try:
         data = await _chat_json(
             [
                 {"role": "system", "content": TOTAL_EPISODES_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Anime (Romaji title): {title}"},
+                {"role": "user", "content": f"Anime (Romaji title): {title}\nSeason: {season}"},
             ],
         )
-        logger.info(f"[total-episodes] {title!r} -> {data}")
+        logger.info(f"[total-episodes] {title!r} season {season} -> {data}")
         if not data:
             return None
         total = data.get("total_episodes")

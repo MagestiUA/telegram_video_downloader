@@ -40,24 +40,25 @@ TOTAL_EPISODES_PROBE_THRESHOLD = 10
 # reasonable default season length rather than leaving total_episodes at 0
 # forever (which would mean re-asking on every single check cycle
 # indefinitely). Only applied when downloaded_count hasn't already
-# exceeded it — see _resolve_total_episodes_and_maybe_stop.
+# exceeded it — see _ensure_total_episodes.
 DEFAULT_TOTAL_EPISODES_FALLBACK = 12
 
 
-async def _lookup_total_episodes(title: str) -> tuple[int | None, str]:
+async def _lookup_total_episodes(title: str, season: int = 1) -> tuple[int | None, str]:
     """
-    Two-stage lookup for a season's total episode count, tried in order:
+    Two-stage lookup for a SEASON's total episode count, tried in order:
     1. AniList — a live, community-maintained anime database (free, no API
        key). Far more reliable than an LLM's memory, and often has the
-       number even before a season finishes airing.
+       number even before a season finishes airing. Season N is reached
+       through AniList's SEQUEL chain.
     2. DeepSeek's own training knowledge, as a fallback for titles AniList
        doesn't have (rare, but happens for very new or obscure releases).
     Returns (episode_count_or_None, source_name) for logging.
     """
-    total = await anilist_episode_count(title)
+    total = await anilist_episode_count(title, season)
     if total:
         return total, "AniList"
-    total = await extract_total_episodes(title)
+    total = await extract_total_episodes(title, season)
     if total:
         return total, "DeepSeek"
     return None, "жодне джерело"
@@ -76,91 +77,90 @@ def _renew_tracking_keyboard(series_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
-async def _resolve_total_episodes_and_maybe_stop(
-    series: db.sqlite3.Row, client, handler, url: str, title: str, display: str
-) -> bool:
+async def release_source(handler, url: str, series_id: int, title: str = ""):
     """
-    Run BEFORE contacting Telegram at all, on every check cycle:
-    1. Once >= TOTAL_EPISODES_PROBE_THRESHOLD episodes of the CURRENT
-       season are already downloaded and total_episodes is still 0
-       (unresolved), ask DeepSeek for the season's real length. If it
-       doesn't know AND we haven't already downloaded more than the
-       fallback would allow, use DEFAULT_TOTAL_EPISODES_FALLBACK so we
-       don't re-ask every cycle. If we've already downloaded MORE than the
-       fallback (a backlog title crossing the threshold for the first time
-       right when this feature shipped, still clearly ongoing), do NOT
-       assign a number — that would retroactively declare it "finished" at
-       a count we've already exceeded. Leave total_episodes at 0 and keep
-       relying on the "N з N" caption pattern for such titles; the probe
-       retries next cycle in case DeepSeek can identify it later.
-    2. If total_episodes is known (> 0) and we've already downloaded that
-       many episodes of the current season, the season is done — auto-stop
-       tracking right here, without ever hitting Telegram this cycle.
+    Leave the source (a dedicated private channel) once a series is done —
+    UNLESS another active row still tracks the same URL. A multi-season
+    channel has one row per chosen season, all sharing one URL: finishing
+    season 1 must not make the userbot walk out of a channel season 2 and 3
+    are still being downloaded from. Never raises.
+    """
+    if db.other_active_series_use_url(url, series_id):
+        logger.info(f"[{title}] джерело ще потрібне іншим активним записам — не виходжу з нього.")
+        return
+    try:
+        await handler.cleanup(url)
+    except Exception as e:
+        logger.warning(f"[{title}] cleanup() failed: {e}")
 
-    One series row spans every season a title airs (last_season/
-    last_episode just move forward) — episodes are counted for
-    series["last_season"] ONLY, never across all seasons combined, and
-    record_episode() resets total_episodes to 0 the moment a new season's
-    first episode is recorded, so a resolved count never leaks into the
-    next season.
 
-    Returns True if tracking was just auto-stopped (caller should skip the
-    rest of this cycle's Telegram check for this series).
+async def _ensure_total_episodes(series: db.sqlite3.Row, title: str, season: int, downloaded_count: int) -> int:
+    """
+    Resolve (and persist) the season's total episode count if it's still
+    unknown and enough episodes are downloaded to be worth asking. Returns
+    the known total, or 0 when it's still unknown. It only RESOLVES — the
+    decision to stop lives in process_series, after the source has been
+    listed, because whether a season is "the end" depends on what the source
+    still holds.
+
+    If AniList/DeepSeek don't know AND we haven't already downloaded more
+    than the fallback would allow, use DEFAULT_TOTAL_EPISODES_FALLBACK so we
+    don't re-ask every cycle. If we've already downloaded MORE than the
+    fallback (a backlog title still clearly ongoing), do NOT assign a number
+    — that would retroactively declare it "finished" at a count we've
+    already exceeded. Leave it 0 and rely on the "N з N" caption pattern; the
+    lookup retries next cycle in case a source can identify it later.
+
+    `season` is the season this series row is about (season_filter for a
+    per-season row, otherwise last_season) — episodes are counted for that
+    season ONLY, and record_episode() resets total_episodes to 0 when a new
+    season starts, so a resolved count never leaks into the next season.
     """
     series_id = series["id"]
-    chat_id = series["chat_id"]
-    current_season = series["last_season"]
-    downloaded_count = sum(
-        1 for (season, _episode) in db.get_downloaded_set(series_id) if season == current_season
-    )
-    total_episodes = series["total_episodes"] or 0
+    total = series["total_episodes"] or 0
+    if total or downloaded_count < TOTAL_EPISODES_PROBE_THRESHOLD:
+        return total
 
-    if total_episodes == 0 and downloaded_count >= TOTAL_EPISODES_PROBE_THRESHOLD:
-        total, source = await _lookup_total_episodes(title)
-        if total:
-            total_episodes = total
-            db.set_total_episodes(series_id, total_episodes)
-            logger.info(
-                f"[{title}] сезон {current_season}: {source} визначив кількість серій = {total_episodes}."
-            )
-        elif downloaded_count < DEFAULT_TOTAL_EPISODES_FALLBACK:
-            total_episodes = DEFAULT_TOTAL_EPISODES_FALLBACK
-            db.set_total_episodes(series_id, total_episodes)
-            logger.info(
-                f"[{title}] сезон {current_season}: {source} не знайшло — fallback = {total_episodes}."
-            )
-        else:
-            logger.info(
-                f"[{title}] сезон {current_season}: {source} не знайшло, а вже скачано "
-                f"{downloaded_count} (> fallback {DEFAULT_TOTAL_EPISODES_FALLBACK}) — "
-                f"не встановлюю total_episodes, покладаюсь на 'N з N' у підписі."
-            )
-
-    if total_episodes > 0 and downloaded_count >= total_episodes:
+    found, source = await _lookup_total_episodes(title, season)
+    if found:
+        db.set_total_episodes(series_id, found)
+        logger.info(f"[{title}] сезон {season}: {source} визначив кількість серій = {found}.")
+        return found
+    if downloaded_count < DEFAULT_TOTAL_EPISODES_FALLBACK:
+        db.set_total_episodes(series_id, DEFAULT_TOTAL_EPISODES_FALLBACK)
         logger.info(
-            f"[{title}] сезон {current_season}: завантажено {downloaded_count}/{total_episodes} — "
-            f"відстеження зупинено (без звернення до ТГ цього циклу)."
+            f"[{title}] сезон {season}: {source} не знайшло — fallback = {DEFAULT_TOTAL_EPISODES_FALLBACK}."
         )
-        db.stop_series(series_id)
+        return DEFAULT_TOTAL_EPISODES_FALLBACK
+    logger.info(
+        f"[{title}] сезон {season}: {source} не знайшло, а вже скачано {downloaded_count} "
+        f"(> fallback {DEFAULT_TOTAL_EPISODES_FALLBACK}) — не встановлюю total_episodes, "
+        f"покладаюсь на 'N з N' у підписі."
+    )
+    return 0
+
+
+async def _stop_season_complete(
+    series: db.sqlite3.Row, client, handler, url: str, title: str, display: str,
+    season: int, done_count: int, total: int,
+):
+    """Auto-stop a series whose (known-length) season is fully downloaded, and tell everyone."""
+    series_id = series["id"]
+    logger.info(f"[{title}] сезон {season}: завантажено {done_count}/{total} — відстеження зупинено.")
+    db.stop_series(series_id)
+    await release_source(handler, url, series_id, title)
+
+    done_text = (
+        f"🏁 **{display}** (сезон {season}): завантажено всі "
+        f"{done_count}/{total} серій — знято з відстеження."
+    )
+    reply_markup = _renew_tracking_keyboard(series_id)
+    all_users = settings.allowed_users_set or {series["chat_id"]}
+    for uid in all_users:
         try:
-            await handler.cleanup(url)
+            await client.send_message(uid, done_text, reply_markup=reply_markup)
         except Exception as e:
-            logger.warning(f"[{title}] cleanup() after auto-stop failed: {e}")
-
-        done_text = (
-            f"🏁 **{display}** (сезон {current_season}): завантажено всі "
-            f"{downloaded_count}/{total_episodes} серій — знято з відстеження."
-        )
-        reply_markup = _renew_tracking_keyboard(series_id)
-        all_users = settings.allowed_users_set or {chat_id}
-        for uid in all_users:
-            try:
-                await client.send_message(uid, done_text, reply_markup=reply_markup)
-            except Exception as e:
-                logger.warning(f"Failed to notify {uid}: {e}")
-        return True
-
-    return False
+            logger.warning(f"Failed to notify {uid}: {e}")
 
 
 async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
@@ -172,6 +172,11 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     (used only for the immediate check triggered right after adding a title,
     so the "⏳ Перевіряю доступні серії..." status doesn't hang forever if
     there turn out to be no new episodes).
+
+    A series row either follows its source through whatever seasons it airs
+    (season_filter is NULL — last_season just moves forward), or, for a
+    source that holds several seasons at once, is pinned to ONE season
+    (season_filter = N) and only ever sees that season's episodes.
     """
     series_id = series["id"]
     chat_id   = series["chat_id"]
@@ -180,6 +185,8 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
     url       = series["base_url"]
     category  = series["category"]
     dest_path = settings.DOWNLOAD_PATH if category == "anime" else settings.DORAMA_PATH
+    season_filter = series["season_filter"]
+    current_season = season_filter or series["last_season"]
 
     async def _finalize_status(text: str):
         if initial_status_msg:
@@ -194,35 +201,39 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         await _finalize_status(f"❌ **{display}**: джерело не підтримується.")
         return False
 
-    # Season-length check: resolve total_episodes (if not yet known and
-    # we've downloaded enough to ask), and auto-stop right here if the
-    # known total is already fully downloaded — BEFORE spending any
-    # Telegram API calls this cycle.
-    stopped = await _resolve_total_episodes_and_maybe_stop(series, client, handler, url, title, display)
-    if stopped:
-        await _finalize_status(f"🏁 **{display}**: усі серії вже завантажені — знято з відстеження.")
-        return False
-    # Re-fetch: the pre-check above may have just resolved total_episodes
-    # for the first time this cycle — the download loop below needs that
-    # fresh value (not the stale one captured before the pre-check ran) to
-    # recognize a finale the moment the matching episode downloads, instead
-    # of only catching it on the NEXT cycle's pre-check.
-    series = db.get_series_by_id(series_id)
+    # Resolve the season's length (needs only the DB + AniList, no Telegram).
+    # Episodes are counted for the current season ALONE — one row spans every
+    # season a title airs, so a combined count would be meaningless.
+    done = db.get_downloaded_set(series_id)
+    done_count = sum(1 for (s, _e) in done if s == current_season)
+    known_total = await _ensure_total_episodes(series, title, current_season, done_count)
 
     # Fetch all currently available DUB episodes
     available = await handler.list_episodes(url)
+    if season_filter is not None:
+        available = [e for e in available if e["season"] == season_filter]
     if not available:
         logger.info(f"[{title}] немає доступних дубльованих епізодів.")
         await _finalize_status(f"⚠️ **{display}**: серій ще не знайдено.")
         return False
 
-    done = db.get_downloaded_set(series_id)
     new_eps = sorted(
         (e for e in available if (e["season"], e["episode"]) not in done),
         key=lambda e: (e["season"], e["episode"])
     )
 
     if not new_eps:
+        # Season complete = its known length is downloaded AND the source holds
+        # nothing later. A source with later seasons (a channel that carries
+        # S1+S2+S3 together) is NOT finished just because one season is — that
+        # was the 24/24 trap: stop after S1E24 and never touch S2/S3. Rows
+        # pinned to one season never look at other seasons (they have rows of
+        # their own).
+        later_seasons_in_source = season_filter is None and any(e["season"] > current_season for e in available)
+        if known_total > 0 and done_count >= known_total and not later_seasons_in_source:
+            await _stop_season_complete(series, client, handler, url, title, display, current_season, done_count, known_total)
+            await _finalize_status(f"🏁 **{display}**: усі серії вже завантажені — знято з відстеження.")
+            return False
         logger.info(f"[{title}] нових епізодів немає ({len(available)} вже завантажено).")
         await _finalize_status(
             f"✅ **{display}**: усі доступні серії вже завантажені ({len(available)})."
@@ -234,8 +245,6 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
         f"✅ **{display}**: знайдено {len(new_eps)} нових серій — починаю завантаження..."
     )
     downloaded_any = False
-    current_season = series["last_season"]
-    known_total = series["total_episodes"] or 0
 
     for i, ep in enumerate(new_eps):
         season, episode, source = ep["season"], ep["episode"], ep["source"]
@@ -271,14 +280,16 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
 
             # Two independent finale signals: the caption-based "N з N"
             # pattern, OR this episode itself reaching the already-known
-            # total_episodes for its season. The latter is normally caught
-            # by the pre-check at the top of the NEXT cycle — checking it
-            # again right here means a season that finishes THIS cycle
-            # stops immediately instead of sitting "done but still active"
-            # for up to CHECK_INTERVAL_HOURS until the next cycle notices.
-            is_finale = ep.get("is_finale", False) or (
+            # total_episodes of ITS season. Either one only counts when the
+            # source holds nothing LATER than this episode — a channel that
+            # carries every season at once has its S1 finale ("24 з 24")
+            # long before the end of the title, and stopping there would
+            # abandon S2/S3 (and walk out of the channel).
+            has_later = any((e["season"], e["episode"]) > (season, episode) for e in available)
+            reached_end = ep.get("is_finale", False) or (
                 known_total > 0 and season == current_season and episode >= known_total
             )
+            is_finale = reached_end and not has_later
 
             done_text = (
                 f"✅ Завантажено: **{display}** S{season:02d}E{episode:02d}"
@@ -298,10 +309,7 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
 
             if is_finale:
                 db.stop_series(series_id)
-                try:
-                    await handler.cleanup(url)
-                except Exception as e:
-                    logger.warning(f"[{title}] cleanup() after finale failed: {e}")
+                await release_source(handler, url, series_id, title)
                 logger.info(f"[{title}] фінальна серія завантажена — відстеження зупинено.")
                 break
         else:
@@ -316,6 +324,25 @@ async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None
             break
 
     return downloaded_any
+
+
+async def process_many(series_ids: list[int], client):
+    """
+    Process several series strictly one after another, with the usual pause
+    between them. Used when one action creates several rows at once (the
+    per-season rows of a multi-season channel): they share ONE userbot
+    account and one channel, so running them in parallel would only fight
+    over Telegram's per-account rate limits for no gain.
+    """
+    for i, series_id in enumerate(series_ids):
+        row = db.get_series_by_id(series_id)
+        if row and row["active"]:
+            try:
+                await process_series(row, client)
+            except Exception as e:
+                logger.error(f"Error processing series #{series_id}: {e}", exc_info=True)
+        if i < len(series_ids) - 1:
+            await asyncio.sleep(INTER_SERIES_DELAY_SECONDS)
 
 
 async def run_checker(client):

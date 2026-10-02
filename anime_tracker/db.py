@@ -70,11 +70,19 @@ def init_db():
             # An earlier version of this column allowed NULL — normalize
             # any such rows to 0 so callers never have to special-case None.
             conn.execute("UPDATE series SET total_episodes = 0 WHERE total_episodes IS NULL")
+        # Migration: `season_filter` — NULL for an ordinary row (tracks the
+        # source's episodes whatever season they carry, last_season just moves
+        # forward as new seasons air), or a season number for a row created
+        # from a source that holds SEVERAL seasons at once (one channel with
+        # S1+S2+S3): such a title gets one row per chosen season, each
+        # downloading and finishing independently of the others.
+        if "season_filter" not in cols:
+            conn.execute("ALTER TABLE series ADD COLUMN season_filter INTEGER")
     logger.info("Anime tracking DB initialized.")
 
 
 def add_series(chat_id: int, title: str, url: str, category: str = "anime",
-               display_title: str | None = None) -> int:
+               display_title: str | None = None, season: int | None = None) -> int:
     """
     Add a new series/title to track.
     `url` — the page used to list available episodes (per-episode/serial root/TG topic).
@@ -83,12 +91,17 @@ def add_series(chat_id: int, title: str, url: str, category: str = "anime",
     `title` — official Romaji title, used for folder/file naming.
     `display_title` — localized/raw title shown in bot messages (falls back
     to `title` if not given).
+    `season` — set ONLY for a per-season row of a multi-season source: the row
+    then tracks that season alone (season_filter) and starts with
+    last_season = season, so record_episode() doesn't mistake its first
+    download for a season change and wipe total_episodes.
     Stored in the base_url column. Episode tracking is driven by the `episodes` table.
     """
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO series (chat_id, title, base_url, category, display_title) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, title, url, category, display_title or title)
+            "INSERT INTO series (chat_id, title, base_url, category, display_title, "
+            "total_episodes, season_filter, last_season) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (chat_id, title, url, category, display_title or title, season, season or 1)
         )
         return cur.lastrowid
 
@@ -97,12 +110,38 @@ def find_active_series_by_title(title: str, category: str) -> sqlite3.Row | None
     """
     Case-insensitive lookup for an already-tracked active series with the
     same (official) title in this category — used to reject duplicate adds.
+    With per-season rows a title can have several; this returns the first.
     """
     with _connect() as conn:
         return conn.execute(
-            "SELECT * FROM series WHERE active = 1 AND category = ? AND title = ? COLLATE NOCASE",
+            "SELECT * FROM series WHERE active = 1 AND category = ? AND title = ? COLLATE NOCASE "
+            "ORDER BY id",
             (category, title.strip())
         ).fetchone()
+
+
+def find_all_active_series_by_title(title: str, category: str) -> list[sqlite3.Row]:
+    """Every active row for this title — more than one when it's tracked per season."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM series WHERE active = 1 AND category = ? AND title = ? COLLATE NOCASE "
+            "ORDER BY id",
+            (category, title.strip())
+        ).fetchall()
+
+
+def other_active_series_use_url(url: str, exclude_id: int) -> bool:
+    """
+    True if some OTHER active row tracks the same source URL. Several
+    per-season rows share one channel, so finishing one season must not make
+    the userbot leave a channel its siblings still need.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM series WHERE active = 1 AND base_url = ? AND id != ? LIMIT 1",
+            (url, exclude_id)
+        ).fetchone()
+    return row is not None
 
 
 def set_display_title(series_id: int, display_title: str):

@@ -52,6 +52,70 @@ def _is_ignored_variant(caption: str) -> bool:
     return any(marker.upper() in upper for marker in IGNORED_CAPTION_MARKERS)
 
 
+# Documents that are clearly not an episode (subtitle files, archives, text,
+# pictures) — a channel can attach those to the same caption format as the
+# video, and they must never be listed as a "new episode" or downloaded over
+# the real file.
+_NON_VIDEO_EXTS = (".ass", ".srt", ".ssa", ".vtt", ".sub", ".zip", ".rar", ".7z", ".txt", ".nfo", ".jpg", ".png")
+
+
+def _is_episode_media(msg) -> bool:
+    if msg.video:
+        return True
+    doc = msg.document
+    if not doc:
+        return False
+    name = (doc.file_name or "").lower()
+    mime = (doc.mime_type or "").lower()
+    if mime.startswith(("text/", "image/", "audio/")) or name.endswith(_NON_VIDEO_EXTS):
+        return False
+    return True
+
+
+def _fmt_dur(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}" if seconds else "?"
+
+
+def _dedupe_episodes(episodes: list[dict], where: str) -> list[dict]:
+    """
+    Keep ONE message per (season, episode). A channel can hold the same episode
+    in several messages (a re-upload, a second dub, a fixed encode — or a short
+    bonus clip that happens to carry the same number). Every one of them
+    resolves to the same target file name, so before this each extra copy was
+    downloaded on top of the previous one: wasted traffic, a file whose
+    content depended on download order, and duplicate DB rows.
+    The LONGER video wins (a 2-5 minute special must never replace the real
+    ~23 minute episode); on equal length the newest message does — a later
+    post is normally the corrected/replacement upload. Every dropped copy is
+    logged with caption, length and size, so a deliberate "two dubs" case is
+    visible instead of silent.
+    """
+    def rank(e: dict) -> tuple[int, int]:
+        return (e.get("duration", 0), e.get("message_id", 0))
+
+    best: dict[tuple[int, int], dict] = {}
+    dropped: list[tuple[dict, dict]] = []
+    for ep in episodes:
+        key = (ep["season"], ep["episode"])
+        current = best.get(key)
+        if current is None:
+            best[key] = ep
+        elif rank(ep) > rank(current):
+            dropped.append((current, ep))
+            best[key] = ep
+        else:
+            dropped.append((ep, current))
+    for old, kept in dropped:
+        logger.warning(
+            f"[{where}] duplicate S{kept['season']:02d}E{kept['episode']:02d}: "
+            f"keeping msg {kept.get('message_id')} {kept.get('caption')!r} "
+            f"({_fmt_dur(kept.get('duration', 0))}, {kept.get('size', 0) // 1048576} MB); "
+            f"skipping msg {old.get('message_id')} {old.get('caption')!r} "
+            f"({_fmt_dur(old.get('duration', 0))}, {old.get('size', 0) // 1048576} MB)"
+        )
+    return [ep for ep in episodes if best[(ep["season"], ep["episode"])] is ep]
+
+
 def _is_finale(caption: str) -> bool:
     m = FINALE_RE.search(caption)
     if not m:
@@ -97,7 +161,7 @@ class TelegramHandler(BaseSiteHandler):
         async for msg in client.get_discussion_replies(chat, anchor_id):
             if msg.id == anchor_id:
                 continue
-            if msg.video or msg.document:
+            if _is_episode_media(msg):
                 yield msg
 
     async def _ensure_joined(self, invite_url: str) -> int | None:
@@ -142,6 +206,12 @@ class TelegramHandler(BaseSiteHandler):
             "episode": episode,
             "source": f"{chat_key}:{msg.id}",
             "is_finale": _is_finale(caption),
+            # Diagnostics only (nobody downstream depends on them) — what
+            # _dedupe_episodes logs when two messages claim the same episode.
+            "message_id": msg.id,
+            "caption": caption[:80],
+            "duration": getattr(msg.video, "duration", 0) or 0,
+            "size": getattr(msg.video or msg.document, "file_size", 0) or 0,
         }
         return episode_dict, was_cached
 
@@ -167,7 +237,7 @@ class TelegramHandler(BaseSiteHandler):
         if not chat_id:
             return None
         async for msg in client.get_chat_history(chat_id):
-            if not (msg.video or msg.document):
+            if not _is_episode_media(msg):
                 continue
             caption = str(msg.caption or msg.text or "")
             if _is_ignored_variant(caption):
@@ -195,7 +265,7 @@ class TelegramHandler(BaseSiteHandler):
             f"list_episodes({chat}): {len(episodes)} episodes, "
             f"{cache_hits} from cache, {cache_misses} newly resolved via DeepSeek."
         )
-        return episodes
+        return _dedupe_episodes(episodes, f"list_episodes({chat})")
 
     async def _list_episodes_private(self, invite_url: str) -> list[dict]:
         client = get_userbot_client()
@@ -210,7 +280,7 @@ class TelegramHandler(BaseSiteHandler):
         episodes: list[dict] = []
         cache_hits = cache_misses = 0
         async for msg in client.get_chat_history(chat_id):
-            if not (msg.video or msg.document):
+            if not _is_episode_media(msg):
                 continue
             ep, was_cached = await self._resolve_episode_from_message(chat_key, msg)
             if ep:
@@ -221,7 +291,7 @@ class TelegramHandler(BaseSiteHandler):
             f"list_episodes(private {chat_id}): {len(episodes)} episodes, "
             f"{cache_hits} from cache, {cache_misses} newly resolved via DeepSeek."
         )
-        return episodes
+        return _dedupe_episodes(episodes, f"list_episodes(private {chat_id})")
 
     async def download(self, source: str, title: str, season: int, episode: int,
                        path: str, notify_msg=None) -> bool:

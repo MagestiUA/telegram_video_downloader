@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import re
+import secrets
+from collections import Counter
 from enum import Enum
 from logging.handlers import RotatingFileHandler
 from pyrogram import Client, idle, filters
@@ -659,15 +661,21 @@ def _tracking_list_content(category: str) -> tuple[str, InlineKeyboardMarkup | N
     for s in series_list:
         started = s["started_at"][:10]
         display = anime_db.resolve_display_title(s)  # backfills legacy rows via mapper.db reverse lookup
+        tag = _season_tag(s)
 
         text += (
-            f"• **{display}**\n"
+            f"• **{display}**{tag}\n"
             f"  S{s['last_season']:02d}E{s['last_episode']:02d} | додано {started}\n\n"
         )
         buttons.append([
-            InlineKeyboardButton(f"⏹ {display}", callback_data=f"anime_stopask_{s['id']}")
+            InlineKeyboardButton(f"⏹ {display}{tag}", callback_data=f"anime_stopask_{s['id']}")
         ])
     return text, InlineKeyboardMarkup(buttons)
+
+
+def _season_tag(s) -> str:
+    """" · сезон N" for a per-season row of a multi-season channel, else nothing."""
+    return f" · сезон {s['season_filter']}" if s["season_filter"] else ""
 
 
 @app.on_callback_query(auth_filter & filters.regex("^anime_stopask_"))
@@ -699,12 +707,11 @@ async def anime_stopyes_callback(client: Client, query: CallbackQuery):
     await query.answer(f"⏹ Зупинено: {title}")
 
     if series:
-        try:
-            handler = get_site_handler(series["base_url"])
-            if handler:
-                await handler.cleanup(series["base_url"])
-        except Exception as e:
-            logger.warning(f"cleanup() on manual stop failed: {e}")
+        handler = get_site_handler(series["base_url"])
+        if handler:
+            # Leaves the channel only if no other active row (another season
+            # of the same channel) still needs it.
+            await anime_checker.release_source(handler, series["base_url"], series_id, series["title"])
 
     # Refresh the list in-place (same category the stopped title belonged to)
     text, kb = _tracking_list_content(category)
@@ -761,7 +768,7 @@ async def anime_renewyes_callback(client: Client, query: CallbackQuery):
         await query.answer("Тайтл не знайдено.")
         return
     display = anime_db.resolve_display_title(series)
-    season = series["last_season"]
+    season = series["season_filter"] or series["last_season"]
     await query.answer()
     try:
         await query.message.edit_text(f"🔄 Поновлюю **{display}**...")
@@ -1080,6 +1087,8 @@ ANIME_HELP = (
     "**Про завантаження:**\n"
     "• Додається одразу, без підтвердження — якщо назву не вдалось розпізнати, бот перепитає\n"
     "• Сезон/епізод кожної серії визначає AI з підпису повідомлення\n"
+    "• Якщо в одному каналі кілька сезонів — бот покаже їх списком, і ви "
+    "обираєте, які відстежувати; кожен сезон — окремий запис зі своєю зупинкою\n"
     "• Якщо підпис містить «N з N» (остання серія) — відстеження зупиняється автоматично\n"
     "• Відстежується до **6 місяців** від дати додавання\n"
     "• При успішному завантаженні — сповіщення отримують усі користувачі бота\n\n"
@@ -1176,6 +1185,170 @@ async def _maybe_track_from_caption(client: Client, message: Message):
         logger.error(f"Caption-based tracking check failed: {e}", exc_info=True)
 
 
+# ── Multi-season sources: which seasons to track ─────────────────────────────
+# One channel can hold every season of a title at once. Each season the user
+# picks becomes its own tracked row (own episode count, own auto-stop), so
+# finishing season 1 can't end — or cut off — season 2 and 3.
+# Held in memory only: callback_data is capped at 64 bytes, and a pending
+# choice that's lost on a restart is simply re-asked by sending the link again.
+pending_season_choices: dict[str, dict] = {}
+
+
+def _ep_word(n: int) -> str:
+    """Ukrainian plural of "серія" for a count."""
+    n10, n100 = n % 10, n % 100
+    if n10 == 1 and n100 != 11:
+        return "серія"
+    if 2 <= n10 <= 4 and not 12 <= n100 <= 14:
+        return "серії"
+    return "серій"
+
+
+def _season_picker_content(token: str) -> tuple[str, InlineKeyboardMarkup]:
+    p = pending_season_choices[token]
+    text = (
+        f"🔎 **{p['display_title']}** — у джерелі знайдено сезонів: **{len(p['seasons'])}**.\n\n"
+        f"Кожен обраний сезон відстежується окремо: свій запис у списку, своя "
+        f"кількість серій і своя зупинка. Натисніть на сезон, щоб змінити ✅/❌, "
+        f"тоді **▶️ Почати**."
+    )
+    if p["tracked"]:
+        text += f"\n\n_Вже відстежуються: {', '.join(str(s) for s in sorted(p['tracked']))}._"
+    buttons = []
+    for season, count in sorted(p["seasons"].items()):
+        mark = "✅" if season in p["selected"] else "❌"
+        note = " · вже є на диску" if season in p["on_disk"] else ""
+        buttons.append([InlineKeyboardButton(
+            f"{mark} Сезон {season} — {count} {_ep_word(count)}{note}",
+            callback_data=f"anime_seasonpick_{token}_{season}",
+        )])
+    buttons.append([
+        InlineKeyboardButton("▶️ Почати", callback_data=f"anime_seasongo_{token}"),
+        InlineKeyboardButton("🚫 Скасувати", callback_data=f"anime_seasoncancel_{token}"),
+    ])
+    return text, InlineKeyboardMarkup(buttons)
+
+
+async def _offer_season_choice(
+    handler, url: str, title: str, display_title: str, chat_id: int, status: Message,
+    exclude: set[int] | frozenset = frozenset(), min_seasons: int = 2,
+) -> bool:
+    """
+    List the source once and, if it holds at least `min_seasons` seasons
+    (not counting `exclude`, the ones already tracked), replace `status`
+    with a pick-your-seasons message and return True. Returns False when
+    there's nothing to ask — the caller carries on with the ordinary single
+    row. Never raises: a failed listing just means "treat it as one season",
+    exactly what happened before this existed.
+    """
+    try:
+        await status.edit_text("🔎 Аналізую джерело (сезони й серії)...")
+    except Exception:
+        pass
+    try:
+        episodes = await handler.list_episodes(url)
+    except Exception as e:
+        logger.warning(f"[{title}] could not list episodes to detect seasons: {e}")
+        return False
+
+    counts = Counter(e["season"] for e in episodes)
+    for season in exclude:
+        counts.pop(season, None)
+    if len(counts) < min_seasons:
+        return False
+
+    # Seasons whose every episode already sits in the title's folder start
+    # unticked — nothing to fetch there.
+    existing = scan_existing_episodes(os.path.join(settings.DOWNLOAD_PATH, sanitize_title(title)))
+    on_disk = {
+        s for s, n in counts.items()
+        if sum(1 for (es, _e) in existing if es == s) >= n
+    }
+    token = secrets.token_hex(4)
+    pending_season_choices[token] = {
+        "chat_id": chat_id, "url": url, "title": title, "display_title": display_title,
+        "seasons": dict(counts), "selected": set(counts) - on_disk, "on_disk": on_disk,
+        "tracked": set(exclude),
+    }
+    text, kb = _season_picker_content(token)
+    try:
+        await status.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"Could not show the season picker: {e}")
+        pending_season_choices.pop(token, None)
+        return False
+    return True
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_seasonpick_"))
+async def anime_seasonpick_callback(client: Client, query: CallbackQuery):
+    _, _, token, season = query.data.split("_")
+    if token not in pending_season_choices:
+        await query.answer("Цей вибір застарів — надішліть посилання ще раз.", show_alert=True)
+        return
+    pending_season_choices[token]["selected"] ^= {int(season)}
+    await query.answer()
+    text, kb = _season_picker_content(token)
+    try:
+        await query.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_seasoncancel_"))
+async def anime_seasoncancel_callback(client: Client, query: CallbackQuery):
+    token = query.data.split("_")[-1]
+    pending_season_choices.pop(token, None)
+    await query.answer("Скасовано")
+    try:
+        await query.message.edit_text("🚫 Скасовано — нічого не додано.")
+    except Exception:
+        pass
+
+
+@app.on_callback_query(auth_filter & filters.regex("^anime_seasongo_"))
+async def anime_seasongo_callback(client: Client, query: CallbackQuery):
+    token = query.data.split("_")[-1]
+    p = pending_season_choices.get(token)
+    if not p:
+        await query.answer("Цей вибір застарів — надішліть посилання ще раз.", show_alert=True)
+        return
+    chosen = sorted(p["selected"])
+    if not chosen:
+        await query.answer("Оберіть хоча б один сезон (або натисніть 🚫 Скасувати).", show_alert=True)
+        return
+    pending_season_choices.pop(token, None)
+    await query.answer()
+
+    # Episodes already in the title's folder are pre-seeded as downloaded
+    # (per season), so a half-fetched season carries on instead of restarting.
+    existing = scan_existing_episodes(os.path.join(settings.DOWNLOAD_PATH, sanitize_title(p["title"])))
+    ids, seeded = [], 0
+    for season in chosen:
+        series_id = anime_db.add_series(
+            p["chat_id"], p["title"], p["url"], category="anime",
+            display_title=p["display_title"], season=season,
+        )
+        seed = {(s, e) for (s, e) in existing if s == season}
+        if seed:
+            anime_db.seed_downloaded_episodes(series_id, seed)
+            seeded += len(seed)
+        ids.append(series_id)
+
+    skipped = sorted(set(p["seasons"]) - set(chosen))
+    try:
+        await query.message.edit_text(
+            f"✅ Додано до відстеження: **{p['display_title']}**\n"
+            f"Сезони: {', '.join(str(s) for s in chosen)}"
+            + (f"\nПропущено: {', '.join(str(s) for s in skipped)}" if skipped else "")
+            + (f"\n📁 Знайдено {seeded} вже наявних серій — пропускаю їх." if seeded else "")
+            + "\n⏳ Сезони перевіряються по черзі..."
+        )
+    except Exception:
+        pass
+    asyncio.create_task(anime_checker.process_many(ids, client))
+
+
 async def _track_anime_url(client: Client, message: Message, url: str):
     """
     Shared logic for adding a title to anime tracking.
@@ -1235,12 +1408,29 @@ async def _track_anime_url(client: Client, message: Message, url: str):
 
     # Prevent adding the same title twice (e.g. via two different channels'
     # links for the same anime) — check by the resolved official title.
-    existing_series = anime_db.find_active_series_by_title(title, category="anime")
-    if existing_series:
+    # A multi-season channel is tracked as one row PER SEASON, so a title can
+    # legitimately have several active rows.
+    existing_rows = anime_db.find_all_active_series_by_title(title, category="anime")
+    if existing_rows:
+        existing_series = existing_rows[0]
         if existing_series["base_url"] == url:
+            # Rows pinned to seasons: the user may have left some seasons out
+            # on purpose and now want one — offer the ones not tracked yet.
+            if all(r["season_filter"] for r in existing_rows):
+                tracked = {r["season_filter"] for r in existing_rows}
+                if await _offer_season_choice(
+                    handler, url, title, raw_title or title, chat_id, status,
+                    exclude=tracked, min_seasons=1,
+                ):
+                    return
+            seasons_note = (
+                " (сезони: " + ", ".join(str(r["season_filter"]) for r in existing_rows) + ")"
+                if all(r["season_filter"] for r in existing_rows) else ""
+            )
             try:
                 await status.edit_text(
-                    f"⚠️ **{title}** вже відстежується (додано {existing_series['started_at'][:10]})."
+                    f"⚠️ **{title}** вже відстежується{seasons_note} "
+                    f"(додано {existing_series['started_at'][:10]})."
                 )
             except Exception:
                 pass
@@ -1254,7 +1444,8 @@ async def _track_anime_url(client: Client, message: Message, url: str):
         # rejecting as a duplicate, so a fresh "watch online" post for a
         # KNOWN title auto-fixes tracking without going through "🔧
         # Виправити тайтл" → "🔗 Оновити посилання" by hand for every title.
-        anime_db.set_base_url(existing_series["id"], url)
+        for row in existing_rows:
+            anime_db.set_base_url(row["id"], url)
         try:
             await status.edit_text(
                 f"🔗 **{title}** вже відстежується — знайдено нове посилання, "
@@ -1262,13 +1453,24 @@ async def _track_anime_url(client: Client, message: Message, url: str):
             )
         except Exception:
             pass
-        refreshed = anime_db.get_series_by_id(existing_series["id"])
-        asyncio.create_task(
-            anime_checker.process_series(refreshed, client, initial_status_msg=status)
-        )
+        if len(existing_rows) == 1:
+            refreshed = anime_db.get_series_by_id(existing_series["id"])
+            asyncio.create_task(
+                anime_checker.process_series(refreshed, client, initial_status_msg=status)
+            )
+        else:
+            asyncio.create_task(anime_checker.process_many([r["id"] for r in existing_rows], client))
         return
 
     display_title = raw_title or title
+
+    # A source that holds SEVERAL seasons at once (one channel with S1+S2+S3)
+    # can't be tracked as a single row: the "which season is this, is it
+    # over" bookkeeping is per season. Ask which seasons the user wants, and
+    # track each chosen one separately.
+    if await _offer_season_choice(handler, url, title, display_title, chat_id, status, min_seasons=2):
+        return
+
     series_id = anime_db.add_series(chat_id, title, url, category="anime", display_title=display_title)
     series_row = anime_db.get_series_by_id(series_id)
 
