@@ -72,8 +72,11 @@ def _is_episode_media(msg) -> bool:
     return True
 
 
-def _fmt_dur(seconds: int) -> str:
-    return f"{seconds // 60}:{seconds % 60:02d}" if seconds else "?"
+def _fmt_dur(seconds) -> str:
+    """m:ss for a duration. Pyrogram hands back a float for some videos, and a
+    log line must never be able to take the listing down with it."""
+    total = int(seconds or 0)
+    return f"{total // 60}:{total % 60:02d}" if total else "?"
 
 
 def _dedupe_episodes(episodes: list[dict], where: str) -> list[dict]:
@@ -257,8 +260,8 @@ class TelegramHandler(BaseSiteHandler):
             # _dedupe_episodes logs when two messages claim the same episode.
             "message_id": msg.id,
             "caption": caption[:80],
-            "duration": getattr(msg.video, "duration", 0) or 0,
-            "size": getattr(msg.video or msg.document, "file_size", 0) or 0,
+            "duration": int(getattr(msg.video, "duration", 0) or 0),
+            "size": int(getattr(msg.video or msg.document, "file_size", 0) or 0),
         }
         return episode_dict, was_cached
 

@@ -165,6 +165,30 @@ async def _stop_season_complete(
 
 async def process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
     """
+    Run one check of a series and never let an error escape unseen. Callers
+    start this as a fire-and-forget task right after a title is added, so an
+    exception used to vanish into "Task exception was never retrieved" while
+    the user's "⏳ Перевіряю доступні серії..." message stayed on screen
+    forever. The failure is now logged with its traceback and shown on that
+    message; the periodic cycle simply tries again next time.
+    """
+    try:
+        return await _process_series(series, client, initial_status_msg)
+    except Exception as e:
+        logger.error(f"[{series['title']}] перевірку перервано помилкою: {e}", exc_info=True)
+        if initial_status_msg:
+            try:
+                await initial_status_msg.edit_text(
+                    f"❌ **{series['title']}**: перевірку перервано помилкою — "
+                    f"`{type(e).__name__}: {e}`\nДеталі в логах бота."
+                )
+            except Exception:
+                pass
+        return False
+
+
+async def _process_series(series: db.sqlite3.Row, client, initial_status_msg=None) -> bool:
+    """
     Check and download all new (not yet downloaded) episodes for one series.
     Returns True if at least one episode was downloaded.
 

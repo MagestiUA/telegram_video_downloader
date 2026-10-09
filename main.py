@@ -1248,8 +1248,19 @@ async def _offer_season_choice(
     try:
         episodes = await handler.list_episodes(url)
     except Exception as e:
-        logger.warning(f"[{title}] could not list episodes to detect seasons: {e}")
-        return False
+        # Do NOT fall through to "treat it as one season": for a channel that
+        # holds several seasons that would add one ordinary row and download
+        # every season into it — the exact thing this picker exists to
+        # prevent. Nothing is added; the user is told and can resend the link.
+        logger.error(f"[{title}] could not list episodes to detect seasons: {e}", exc_info=True)
+        try:
+            await status.edit_text(
+                f"❌ Не вдалося прочитати джерело **{display_title}**: `{type(e).__name__}: {e}`\n"
+                f"Нічого не додано. Спробуйте надіслати посилання ще раз або перегляньте логи."
+            )
+        except Exception:
+            pass
+        return True
 
     counts = Counter(e["season"] for e in episodes)
     for season in exclude:
