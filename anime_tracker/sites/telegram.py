@@ -161,9 +161,44 @@ def _drop_short_specials(episodes: list[dict], where: str) -> list[dict]:
     return kept
 
 
+def _inherit_season(episodes: list[dict], where: str) -> list[dict]:
+    """
+    Fix the season of episodes whose caption simply doesn't say it. Channels
+    mark the season on the first post of a new season ("Переродження мечем 2
+    [01 з XX]") and then drop it again ("Переродження мечем [02 з XX]"), and a
+    caption with no season is read as season 1 — so S2E02 and S2E03 were
+    taken for S1E02 and S1E03: wrongly counted, and downloaded over the real
+    S01 files.
+
+    Walked in posting order (message id), a season never goes backwards. When
+    a message resolves to an EARLIER season than the one already running AND
+    is exactly the next episode of the running season, it is that season's
+    next episode and inherits its number. Anything that doesn't line up that
+    exactly (an older season posted late, a repost) is left alone. Every
+    reassignment is logged.
+    """
+    running_season = None
+    last_episode = 0
+    for e in sorted(episodes, key=lambda x: x.get("message_id", 0)):
+        season, episode = e["season"], e["episode"]
+        if running_season is None or season > running_season:
+            running_season, last_episode = season, episode
+        elif season == running_season:
+            last_episode = episode
+        elif episode == last_episode + 1:
+            logger.warning(
+                f"[{where}] msg {e.get('message_id')} {e.get('caption')!r}: caption says "
+                f"S{season:02d}E{episode:02d} but it follows S{running_season:02d}E{last_episode:02d} "
+                f"in the channel — counting it as S{running_season:02d}E{episode:02d}"
+            )
+            e["season"] = running_season
+            last_episode = episode
+    return episodes
+
+
 def _clean_listing(episodes: list[dict], where: str) -> list[dict]:
-    """Specials out first, THEN one message per (season, episode)."""
-    return _dedupe_episodes(_drop_short_specials(episodes, where), where)
+    """Seasons straightened out, specials out, THEN one message per (season, episode)."""
+    return _dedupe_episodes(_drop_short_specials(_inherit_season(episodes, where), where), where)
 
 
 def _is_finale(caption: str) -> bool:
