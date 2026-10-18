@@ -314,40 +314,78 @@ async def text_handler(client: Client, message: Message):
 
 # --- Shared Utilities ---
 
+# One question at a time per chat. Every question parks a future in
+# waiting_for_user_input[chat_id] and the next plain-text message answers it —
+# so two questions asked at once (two links pasted in a row, two videos) used
+# to overwrite each other's future, and the first one timing out then removed
+# the SECOND one's future. Now a later question simply waits for its turn.
+_prompt_locks: dict[int, asyncio.Lock] = {}
+
+
+def _prompt_lock(chat_id: int) -> asyncio.Lock:
+    return _prompt_locks.setdefault(chat_id, asyncio.Lock())
+
+
+async def _close_prompt(msg: Message | None, prompt: str, outcome: str):
+    """
+    Rewrite an answered/abandoned question into a one-line record. Left as it
+    was, a question keeps asking "Введіть назву…" long after the answer came,
+    and with several messages arriving around it there's no telling which
+    ones are still waiting for you.
+    """
+    if msg is None:
+        return
+    head = (prompt.strip().splitlines() or [""])[0]
+    try:
+        await msg.edit_text(f"{head}\n{outcome}")
+    except Exception:
+        pass
+
+
 async def ask_user(chat_id: int, prompt: str, status_msg: Message, timeout: int = 300) -> str | None:
     """Asks a question by EDITING an existing status message."""
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    waiting_for_user_input[chat_id] = future
-    try:
-        await status_msg.edit_text(prompt)
-        reply = await asyncio.wait_for(future, timeout=timeout)
-        if reply.lower() == "cancel":
-            return None
-        return reply
-    finally:
-        waiting_for_user_input.pop(chat_id, None)
+    async with _prompt_lock(chat_id):
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        waiting_for_user_input[chat_id] = future
+        try:
+            await status_msg.edit_text(prompt)
+            reply = await asyncio.wait_for(future, timeout=timeout)
+            if reply.lower() == "cancel":
+                return None
+            return reply
+        finally:
+            waiting_for_user_input.pop(chat_id, None)
 
 
 async def ask_user_fresh(chat_id: int, prompt: str, timeout: int = 300) -> str | None:
-    """Asks a question by SENDING A NEW message (always appears at bottom of chat)."""
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    waiting_for_user_input[chat_id] = future
-    try:
-        await app.send_message(chat_id, prompt)
-        reply = await asyncio.wait_for(future, timeout=timeout)
-        if reply.lower() == "cancel":
-            return None
-        return reply
-    except asyncio.TimeoutError:
+    """
+    Asks a question by SENDING A NEW message (always appears at bottom of
+    chat). Once the answer (or `cancel`, or the timeout) is in, that message
+    is rewritten into a one-line record of how it ended.
+    """
+    async with _prompt_lock(chat_id):
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        waiting_for_user_input[chat_id] = future
+        sent = None
         try:
-            await app.send_message(chat_id, "❌ Timeout. No reply received.")
-        except Exception:
-            pass
-        return None
-    finally:
-        waiting_for_user_input.pop(chat_id, None)
+            sent = await app.send_message(chat_id, prompt)
+            reply = await asyncio.wait_for(future, timeout=timeout)
+            if reply.lower() == "cancel":
+                await _close_prompt(sent, prompt, "🚫 Скасовано.")
+                return None
+            await _close_prompt(sent, prompt, f"✅ Відповідь прийнято: {reply}")
+            return reply
+        except asyncio.TimeoutError:
+            await _close_prompt(sent, prompt, "⌛ Час на відповідь вийшов.")
+            try:
+                await app.send_message(chat_id, "❌ Timeout. No reply received.")
+            except Exception:
+                pass
+            return None
+        finally:
+            waiting_for_user_input.pop(chat_id, None)
 
 
 # --- Batch Mode Handler ---
@@ -1387,12 +1425,14 @@ async def _track_anime_url(client: Client, message: Message, url: str):
     # This keeps the folder name identical to manually-forwarded downloads and
     # avoids using long localized titles as filesystem folder names directly.
     raw_title = await handler.get_series_title(url)
+    asked = False  # did we have to ask the user anything? (see below)
 
     if raw_title:
         mapped_title = mapper.get_mapping(raw_title)
         if mapped_title:
             title = mapped_title  # known title — zero friction
         else:
+            asked = True
             search_query = quote(raw_title)
             anitube_url = f"https://anitube.in.ua/index.php?do=search&subaction=search&story={search_query}"
             google_url  = f"https://www.google.com/search?q={search_query}+anime"
@@ -1408,6 +1448,7 @@ async def _track_anime_url(client: Client, message: Message, url: str):
                 return
             mapper.add_mapping(raw_title, title)
     else:
+        asked = True
         title = await ask_user_fresh(
             chat_id,
             "⚠️ Не вдалося розпізнати назву.\nВведіть назву тайтлу _(або `cancel`)_:"
@@ -1416,6 +1457,19 @@ async def _track_anime_url(client: Client, message: Message, url: str):
             try: await status.edit_text("❌ Скасовано.")
             except Exception: pass
             return
+
+    if asked:
+        # The question was posted as a NEW message, so it sits BELOW the status
+        # message created at the start. Every later update (the season picker,
+        # "Додано до відстеження…", the check results) edits `status` — left
+        # where it is, all of that happens out of sight, ABOVE the question it
+        # follows from. Park the old one with a one-line note and carry on in
+        # a fresh message at the bottom.
+        try:
+            await status.edit_text(f"📌 Тайтл: **{title}**")
+        except Exception:
+            pass
+        status = await message.reply_text("⏳ Продовжую...")
 
     # Prevent adding the same title twice (e.g. via two different channels'
     # links for the same anime) — check by the resolved official title.
